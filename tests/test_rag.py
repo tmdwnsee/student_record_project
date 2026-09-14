@@ -9,7 +9,7 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from streamlit.testing.v1 import AppTest
 
-from rag.attachment import extract_context
+from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
 from rag.chain import Evidence, ReviewResult, SAMPLE_DRAFT, review_draft, select_evidence, validate_evidence
 from rag.loader import PROJECT_ROOT
 from rag.vectorstore import sync_vectorstore
@@ -34,14 +34,39 @@ class RagTests(unittest.TestCase):
             with self.subTest(name=name, content=content), self.assertRaises(ValueError):
                 extract_context(name, content)
 
+    def test_whole_record_is_read_and_only_relevant_passages_are_selected(self):
+        full_text = "앞부분 " + "가" * 6_000 + " 끝부분 활동"
+        chunks = split_record(full_text)
+        self.assertGreater(len(chunks), 1)
+        self.assertIn("끝부분 활동", chunks[-1])
+
+        assessments = [
+            ChunkAssessment(activity_summary="관계없는 내용", relevance=0),
+            ChunkAssessment(activity_summary="관련 활동", relevance=3),
+            ChunkAssessment(activity_summary="다른 활동", relevance=0),
+        ]
+        with patch("rag.attachment.split_record", return_value=["처음", "중간 원문", "마지막"]), patch(
+            "rag.attachment.ChatOpenAI"
+        ) as model_class:
+            model = model_class.return_value.with_structured_output.return_value
+            model.invoke.side_effect = assessments
+            context = prepare_record_context("전체 생기부", "새 초안")
+        self.assertEqual(model.invoke.call_count, 3)
+        self.assertIn("중간 원문", context)
+        self.assertNotIn("처음", context)
+        self.assertNotIn("마지막", context)
+
     def test_previous_record_is_passed_as_context_without_changing_search_query(self):
-        with patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
+        with patch("rag.chain.check_api_key"), patch(
+            "rag.chain.prepare_record_context", return_value="선택된 맥락"
+        ) as prepare, patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
             "rag.chain.retrieve_guideline_context", return_value=[]
         ) as guideline, patch("rag.chain.generate_review") as generate:
             review_draft("새 초안", object(), object(), "기존 생기부 내용")
+        prepare.assert_called_once_with("기존 생기부 내용", "새 초안")
         self.assertEqual(college.call_args.args[1], "새 초안")
         self.assertEqual(guideline.call_args.args[1], "새 초안")
-        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "기존 생기부 내용"))
+        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "선택된 맥락"))
 
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()

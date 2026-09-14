@@ -99,7 +99,7 @@ def run_cli() -> None:
 
 def run_streamlit() -> None:
     import streamlit as st
-    from rag.attachment import MAX_CONTEXT_CHARS, extract_context
+    from rag.attachment import extract_context
     from rag.chain import review_draft
     from rag.vectorstore import build_vectorstores
 
@@ -127,9 +127,7 @@ def run_streamlit() -> None:
         else:
             try:
                 previous_record = extract_context(uploaded_record.name, upload_bytes) if uploaded_record else ""
-                if previous_record and len(previous_record) == MAX_CONTEXT_CHARS:
-                    st.info(f"첨부 내용은 앞부분 {MAX_CONTEXT_CHARS:,}자까지 참고합니다.")
-                with st.spinner("관련 근거를 찾아 초안을 검토하고 있습니다..."):
+                with st.spinner("첨부 생기부 전체와 관련 근거를 살펴보고 초안을 검토하고 있습니다..."):
                     pdf_versions = tuple(
                         (path.stat().st_mtime_ns, path.stat().st_size)
                         for path in (DATA_DIRECTORY / "college_table.pdf", DATA_DIRECTORY / "student_record_rule.pdf")
@@ -164,6 +162,9 @@ def run_streamlit() -> None:
                 st.write(item.content)
         st.subheader("주의사항")
         st.write(result.caution or "추가 주의사항 없음")
+        if result.record_context:
+            with st.expander("검토에 참고한 기존 생기부 구간"):
+                st.write(result.record_context)
 
 
 if __name__ == "__main__":

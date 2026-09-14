@@ -8,6 +8,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from rag.attachment import prepare_record_context
 from rag.retriever import retrieve_college_context, retrieve_guideline_context
 from rag.vectorstore import check_api_key
 
@@ -27,6 +28,7 @@ class ReviewResult(BaseModel):
     guideline_evidence: list[Evidence]
     college_evidence: list[Evidence]
     caution: str
+    record_context: str = ""
 
 
 class ReviewSelection(BaseModel):
@@ -152,6 +154,7 @@ def generate_review(
         guideline_evidence=select_evidence(selection.guideline_evidence_ids, guideline_results),
         college_evidence=select_evidence(selection.college_evidence_ids, college_results),
         caution=selection.caution,
+        record_context=previous_record,
     )
     # 문서명과 페이지 표기는 모델의 표현 방식에 맡기지 않고 실제 근거에서 생성합니다.
     references = list(dict.fromkeys(
@@ -173,4 +176,7 @@ def review_draft(student_draft: str, college_store, guideline_store, previous_re
         guideline_results = retrieve_guideline_context(guideline_store, student_draft)
     except Exception as error:
         raise RuntimeError(f"[6단계 검색] 검색 실패 ({type(error).__name__}). 네트워크와 저장소를 확인하세요.") from error
+    if previous_record:
+        check_api_key()
+        previous_record = prepare_record_context(previous_record, student_draft)
     return generate_review(student_draft, guideline_results, college_results, previous_record)
