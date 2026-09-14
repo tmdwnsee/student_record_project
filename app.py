@@ -74,7 +74,7 @@ def run_cli() -> None:
     if args.stage == "pdf":
         return
     if not args.draft.strip():
-        raise ValueError("생기부 초안을 입력하세요.")
+        raise ValueError("자기평가보고서 초안을 입력하세요.")
     college_store, guideline_store = build_vectorstores()
     if args.stage == "index":
         return
@@ -101,8 +101,8 @@ def run_streamlit() -> None:
     from rag.chain import review_draft
     from rag.vectorstore import build_vectorstores
 
-    st.set_page_config(page_title="생기부 초안 검토", page_icon="📝")
-    st.title("생기부 초안 검토")
+    st.set_page_config(page_title="자기평가보고서 초안 검토", page_icon="📝")
+    st.title("자기평가보고서 초안 검토")
     st.caption("작성요령과 대학 모집요강의 근거를 바탕으로 초안을 검토합니다.")
 
     @st.cache_resource(show_spinner=False)
@@ -110,11 +110,11 @@ def run_streamlit() -> None:
         # PDF가 바뀌면 캐시도 갱신합니다. 학생 초안은 저장소에 넣지 않습니다.
         return build_vectorstores()
 
-    student_draft = st.text_area("생기부 초안", height=160, placeholder="검토할 활동 기록을 입력하세요.")
+    student_draft = st.text_area("자기평가보고서 초안", height=160, placeholder="검토할 활동 기록을 입력하세요.")
     if st.button("분석하기", type="primary"):
         st.session_state.pop("review_result", None)
         if not student_draft.strip():
-            st.warning("생기부 초안을 입력하세요.")
+            st.warning("자기평가보고서 초안을 입력하세요.")
         else:
             try:
                 with st.spinner("관련 근거를 찾아 초안을 검토하고 있습니다..."):
