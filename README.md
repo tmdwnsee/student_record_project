@@ -72,3 +72,6 @@ git push origin main
 ```
 
 `git status`에서 `.env`와 `.venv`가 추가 대상에 없는지 확인하세요.
+
+
+업데이트 테스트
