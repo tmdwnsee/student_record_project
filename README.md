@@ -2,6 +2,8 @@
 
 자기평가보고서 초안을 입력하면 생기부 작성요령과 대학 모집요강 PDF에서 관련 근거를 검색하고, 원문의 의미를 유지하는 수정안과 수정 이유를 제안하는 Streamlit 앱입니다. 검색된 근거의 파일명과 페이지를 결과에 표시합니다. 생성된 문장은 최종 제출 전에 직접 검토해야 합니다.
 
+기존 생기부를 선택적으로 첨부해 활동 맥락을 참고할 수 있습니다. 첨부 파일은 텍스트가 포함된 PDF 또는 UTF-8 TXT를 지원하며 최대 10MB입니다. 추출된 텍스트의 앞부분 20,000자만 검토에 사용합니다. 스캔 이미지 PDF와 암호화된 PDF는 지원하지 않습니다. 첨부 내용은 공식 근거로 인용하거나 검색 인덱스에 저장하지 않습니다.
+
 ## 프로젝트 구조
 
 | 경로 | 역할 |
@@ -11,6 +13,7 @@
 | `rag/vectorstore.py` | OpenAI 임베딩과 Chroma 검색 저장소 관리 |
 | `rag/retriever.py` | 두 PDF에서 관련 내용 검색 |
 | `rag/chain.py` | 검색 근거를 이용한 수정안 생성 및 근거 검증 |
+| `rag/attachment.py` | 기존 생기부 첨부 파일의 텍스트 추출 |
 | `data/college_table.pdf` | 대학 모집요강 원본 |
 | `data/student_record_rule.pdf` | 생기부 작성요령 원본 |
 | `tests/test_rag.py` | API 호출 없이 실행하는 회귀 테스트 |
@@ -31,7 +34,7 @@ OPENAI_API_KEY=본인의_API_키
 OPENAI_MODEL=gpt-4o-mini
 ```
 
-`OPENAI_MODEL`은 선택 사항입니다. 기본값은 `gpt-4o-mini`이며, 임베딩에는 `text-embedding-3-small`을 사용합니다. 최초 분석 시 PDF 내용을 임베딩하고, 분석할 때 검색 및 응답 생성을 위해 OpenAI API를 호출하므로 사용료가 발생할 수 있습니다. 학생 초안과 검색된 PDF 내용도 API로 전달됩니다.
+`OPENAI_MODEL`은 선택 사항입니다. 기본값은 `gpt-4o-mini`이며, 임베딩에는 `text-embedding-3-small`을 사용합니다. 최초 분석 시 PDF 내용을 임베딩하고, 분석할 때 검색 및 응답 생성을 위해 OpenAI API를 호출하므로 사용료가 발생할 수 있습니다. 학생 초안, 검색된 PDF 내용, 첨부 파일에서 추출한 텍스트도 응답 생성을 위해 API로 전달됩니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
@@ -72,5 +75,4 @@ git push origin main
 ```
 
 `git status`에서 `.env`와 `.venv`가 추가 대상에 없는지 확인하세요.
-
 

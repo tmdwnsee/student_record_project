@@ -1,6 +1,7 @@
 """Streamlit UI와 단계별 콘솔 점검 진입점."""
 
 import argparse
+import hashlib
 import sys
 
 from dotenv import load_dotenv
@@ -98,6 +99,7 @@ def run_cli() -> None:
 
 def run_streamlit() -> None:
     import streamlit as st
+    from rag.attachment import MAX_CONTEXT_CHARS, extract_context
     from rag.chain import review_draft
     from rag.vectorstore import build_vectorstores
 
@@ -111,12 +113,22 @@ def run_streamlit() -> None:
         return build_vectorstores()
 
     student_draft = st.text_area("자기평가보고서 초안", height=160, placeholder="검토할 활동 기록을 입력하세요.")
+    uploaded_record = st.file_uploader(
+        "기존 생기부 첨부 (선택)", type=["pdf", "txt"],
+        help="기존 활동을 이해하는 참고 자료로만 사용합니다. 텍스트 PDF 또는 UTF-8 TXT, 10MB 이하.",
+    )
+    upload_bytes = uploaded_record.getvalue() if uploaded_record else b""
+    context_key = (student_draft, hashlib.sha256(upload_bytes).hexdigest() if uploaded_record else "")
     if st.button("분석하기", type="primary"):
         st.session_state.pop("review_result", None)
+        st.session_state.pop("review_context_key", None)
         if not student_draft.strip():
             st.warning("자기평가보고서 초안을 입력하세요.")
         else:
             try:
+                previous_record = extract_context(uploaded_record.name, upload_bytes) if uploaded_record else ""
+                if previous_record and len(previous_record) == MAX_CONTEXT_CHARS:
+                    st.info(f"첨부 내용은 앞부분 {MAX_CONTEXT_CHARS:,}자까지 참고합니다.")
                 with st.spinner("관련 근거를 찾아 초안을 검토하고 있습니다..."):
                     pdf_versions = tuple(
                         (path.stat().st_mtime_ns, path.stat().st_size)
@@ -124,15 +136,16 @@ def run_streamlit() -> None:
                     )
                     college_store, guideline_store = get_stores(pdf_versions)
                     st.session_state["review_result"] = review_draft(
-                        student_draft, college_store, guideline_store,
+                        student_draft, college_store, guideline_store, previous_record,
                     )
+                    st.session_state["review_context_key"] = context_key
             except (ValueError, RuntimeError) as error:
                 st.error(str(error))
             except Exception as error:
                 st.error(f"분석 준비 실패 ({type(error).__name__}). PDF 파일과 실행 환경을 확인하세요.")
 
     result = st.session_state.get("review_result")
-    if result is not None and result.original_text == student_draft:
+    if result is not None and st.session_state.get("review_context_key") == context_key:
         for title, value in (
             ("원문", result.original_text), ("수정안", result.revised_text),
             ("수정 이유", result.revision_reason),

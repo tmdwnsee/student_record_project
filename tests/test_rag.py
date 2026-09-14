@@ -9,7 +9,8 @@ from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from streamlit.testing.v1 import AppTest
 
-from rag.chain import Evidence, ReviewResult, SAMPLE_DRAFT, select_evidence, validate_evidence
+from rag.attachment import extract_context
+from rag.chain import Evidence, ReviewResult, SAMPLE_DRAFT, review_draft, select_evidence, validate_evidence
 from rag.loader import PROJECT_ROOT
 from rag.vectorstore import sync_vectorstore
 
@@ -27,6 +28,21 @@ class CountingEmbeddings(Embeddings):
 
 
 class RagTests(unittest.TestCase):
+    def test_previous_record_text_extraction_and_validation(self):
+        self.assertEqual(extract_context("record.txt", "기존 활동".encode("utf-8")), "기존 활동")
+        for name, content in (("record.txt", b""), ("record.txt", b"\xff"), ("record.docx", b"x")):
+            with self.subTest(name=name, content=content), self.assertRaises(ValueError):
+                extract_context(name, content)
+
+    def test_previous_record_is_passed_as_context_without_changing_search_query(self):
+        with patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
+            "rag.chain.retrieve_guideline_context", return_value=[]
+        ) as guideline, patch("rag.chain.generate_review") as generate:
+            review_draft("새 초안", object(), object(), "기존 생기부 내용")
+        self.assertEqual(college.call_args.args[1], "새 초안")
+        self.assertEqual(guideline.call_args.args[1], "새 초안")
+        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "기존 생기부 내용"))
+
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()
         documents = [Document(page_content="평가 기준", metadata={"source": "college_table.pdf", "page": 71})]
