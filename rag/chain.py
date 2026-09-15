@@ -10,7 +10,8 @@ from pydantic import BaseModel, Field
 
 from rag.attachment import prepare_record_context
 from rag.retriever import retrieve_college_context, retrieve_guideline_context
-from rag.vectorstore import check_api_key
+from storage.vectorstore import check_api_key
+from storage.vectorstore import load_vectorstores
 
 SAMPLE_DRAFT = "데이터 분석 프로젝트를 진행하며 Python을 활용해 데이터를 분석하고 문제 해결 능력을 향상하였다."
 
@@ -168,15 +169,43 @@ def generate_review(
     return result
 
 
-def review_draft(student_draft: str, college_store, guideline_store, previous_record: str = "") -> ReviewResult:
+def review_draft(
+    student_draft: str
+) -> ReviewResult:
+
     if not student_draft.strip():
-        raise ValueError("생기부 초안을 입력하세요.")
+        raise ValueError(
+            "생기부 초안을 입력하세요."
+        )
+
+    college_store, guideline_store = (
+        load_vectorstores()
+    )
+
     try:
-        college_results = retrieve_college_context(college_store, student_draft)
-        guideline_results = retrieve_guideline_context(guideline_store, student_draft)
+        college_results = (
+            retrieve_college_context(
+                college_store,
+                student_draft,
+            )
+        )
+
+        guideline_results = (
+            retrieve_guideline_context(
+                guideline_store,
+                student_draft,
+            )
+        )
+
     except Exception as error:
-        raise RuntimeError(f"[6단계 검색] 검색 실패 ({type(error).__name__}). 네트워크와 저장소를 확인하세요.") from error
-    if previous_record:
-        check_api_key()
-        previous_record = prepare_record_context(previous_record, student_draft)
-    return generate_review(student_draft, guideline_results, college_results, previous_record)
+
+        raise RuntimeError(
+            f"RAG 검색 실패 "
+            f"({type(error).__name__})"
+        ) from error
+
+    return generate_review(
+        student_draft,
+        guideline_results,
+        college_results,
+    )

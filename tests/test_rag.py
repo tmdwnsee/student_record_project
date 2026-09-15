@@ -11,8 +11,8 @@ from streamlit.testing.v1 import AppTest
 
 from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
 from rag.chain import Evidence, ReviewResult, SAMPLE_DRAFT, review_draft, select_evidence, validate_evidence
-from rag.loader import PROJECT_ROOT
-from rag.vectorstore import sync_vectorstore
+from ingestion.loader import PROJECT_ROOT
+from storage.vectorstore import sync_vectorstore
 
 
 class CountingEmbeddings(Embeddings):
