@@ -1,7 +1,8 @@
 # Python 3.12 / 두 PDF 기반 RAG 테스트
-python-dotenv==1.2.3
 langchain-text-splitters==1.1.2
-langchain-openai==1.6.2
+langchain-ollama==1.1.0
+langchain-huggingface==1.2.2
+sentence-transformers==6.0.1
 langchain-chroma==1.1.0
 chromadb==1.5.9
 pydantic==2.13.5

@@ -1,14 +1,14 @@
 """업로드한 기존 생기부의 전체 텍스트를 읽고 관련 활동을 고릅니다."""
 
-import os
 import tempfile
 from pathlib import Path
 
-from langchain_openai import ChatOpenAI
+from langchain_ollama import ChatOllama
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
 
 from ingestion.pdf_pipeline import process_pdf
+from config import MODEL, OLLAMA_BASE_URL
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 CHUNK_SIZE = 5_000
@@ -58,10 +58,12 @@ def prepare_record_context(text: str, draft: str) -> str:
     if not text.strip():
         return ""
     chunks = split_record(text)
-    model = ChatOpenAI(
-        model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
-        temperature=0, timeout=90, max_retries=1,
-    ).with_structured_output(ChunkAssessment, method="json_schema", strict=True)
+    model = ChatOllama(
+        model=MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0,
+        reasoning=False,
+    ).with_structured_output(ChunkAssessment, method="json_schema")
     assessments = []
     for index, chunk in enumerate(chunks):
         try:
@@ -74,7 +76,7 @@ def prepare_record_context(text: str, draft: str) -> str:
         except Exception as error:
             raise RuntimeError(
                 f"[첨부 분석] {index + 1}/{len(chunks)} 구간 처리 실패 ({type(error).__name__}). "
-                "API 키, 잔액, 모델 접근 권한 및 네트워크를 확인하세요."
+                "Ollama가 실행 중인지와 qwen3.5:9b 모델이 설치되어 있는지 확인하세요."
             ) from error
         if not isinstance(assessment, ChunkAssessment):
             raise ValueError(f"[첨부 분석] {index + 1}/{len(chunks)} 구간의 구조화된 응답을 받지 못했습니다.")

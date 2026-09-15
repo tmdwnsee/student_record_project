@@ -8,10 +8,8 @@ import json
 from chromadb.config import Settings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
 from config import (
-    check_api_key,
     EMBEDDING_MODEL,
     COLLEGE_PDF,
     GUIDELINE_PDF,
@@ -25,6 +23,7 @@ from ingestion.prepare_documents import (
     prepare_documents,
     split_documents,
 )
+from storage.embeddings import get_embeddings
 
 
 def sync_vectorstore(
@@ -146,11 +145,7 @@ def build_index(
 
 def main():
 
-    check_api_key()
-
-    embedding = OpenAIEmbeddings(
-        model=EMBEDDING_MODEL
-    )
+    embedding = get_embeddings()
 
     print("Vector Store 갱신 시작")
 

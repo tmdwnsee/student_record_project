@@ -8,16 +8,14 @@ from functools import lru_cache
 
 from chromadb.config import Settings
 from langchain_chroma import Chroma
-from langchain_openai import OpenAIEmbeddings
 
 from config import (
-    check_api_key,
-    EMBEDDING_MODEL,
     COLLEGE_VECTORSTORE,
     GUIDELINE_VECTORSTORE,
     COLLEGE_COLLECTION,
     GUIDELINE_COLLECTION,
 )
+from storage.embeddings import get_embeddings
 
 
 def validate_vectorstore(directory):
@@ -50,8 +48,7 @@ def _open_store(directory, collection, embedding):
 
 @lru_cache(maxsize=1)
 def load_vectorstores():
-    check_api_key()
-    embedding = OpenAIEmbeddings(model=EMBEDDING_MODEL)
+    embedding = get_embeddings()
     return (
         _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, embedding),
         _open_store(GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION, embedding),

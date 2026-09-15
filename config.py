@@ -1,9 +1,6 @@
 # config.py
 
-import os
 from pathlib import Path
-
-from dotenv import load_dotenv
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -25,13 +22,6 @@ GUIDELINE_VECTORSTORE = VECTORSTORE_DIRECTORY / "guideline"
 COLLEGE_COLLECTION = "college_collection"
 GUIDELINE_COLLECTION = "guideline_collection"
 
-EMBEDDING_MODEL = "text-embedding-3-small"
-
-
-def check_api_key():
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
-
-    if not os.getenv("OPENAI_API_KEY", "").strip():
-        raise ValueError(
-            ".env에 OPENAI_API_KEY를 설정하세요."
-        )
+EMBEDDING_MODEL = "BAAI/bge-m3"
+MODEL = "qwen3.5:9b"
+OLLAMA_BASE_URL = "http://localhost:11434"

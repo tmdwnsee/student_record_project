@@ -21,7 +21,7 @@
 | `rag/attachment.py` | 기존 생기부 첨부 파일의 텍스트 추출 |
 | `data/college_table.pdf` | 대학 모집요강 원본 |
 | `data/student_record_rule.pdf` | 생기부 작성요령 원본 |
-| `tests/test_rag.py` | API 호출 없이 실행하는 회귀 테스트 |
+| `tests/test_rag.py` | 외부 모델 호출 없이 실행하는 회귀 테스트 |
 
 ## 설치 및 실행
 
@@ -32,14 +32,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-프로젝트 루트에 `.env` 파일을 만들고 본인의 API 키를 설정합니다.
+Ollama를 설치하고 로컬 LLM을 준비합니다.
 
-```dotenv
-OPENAI_API_KEY=본인의_API_키
-OPENAI_MODEL=gpt-4o-mini
+```powershell
+ollama pull qwen3.5:9b
 ```
 
-`OPENAI_MODEL`은 선택 사항입니다. 기본값은 `gpt-4o-mini`이며, 임베딩에는 `text-embedding-3-small`을 사용합니다. 최초 분석 시 PDF 내용을 임베딩하고, 분석할 때 검색 및 응답 생성을 위해 OpenAI API를 호출하므로 사용료가 발생할 수 있습니다. 첨부 파일을 사용할 때는 모든 구간을 검토하기 위한 추가 모델 호출이 발생하므로 문서 길이에 따라 시간과 비용이 늘어납니다. 학생 초안, 검색된 PDF 내용, 첨부 파일에서 추출한 전체 텍스트는 구간별 분석 과정에서 OpenAI API로 전달됩니다.
+답변 생성에는 Ollama의 `qwen3.5:9b`, 검색용 임베딩에는 CPU에서 실행되는 `BAAI/bge-m3`를 사용합니다. `BAAI/bge-m3`는 인덱스를 처음 생성할 때 Hugging Face에서 자동으로 내려받습니다. OpenAI API 키는 필요하지 않습니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
@@ -47,7 +46,7 @@ OPENAI_MODEL=gpt-4o-mini
 
 브라우저에서 <http://localhost:8501>에 접속해 초안을 입력하고 **분석하기**를 누릅니다. 종료하려면 터미널에서 `Ctrl+C`를 누르세요.
 
-PDF가 처음 등록되거나 변경됐다면 앱 실행 전에 검색 인덱스를 갱신합니다.
+PDF가 처음 등록되거나 변경됐거나 임베딩 모델을 변경했다면 기존 `vectorstores/` 폴더를 지운 후 검색 인덱스를 다시 생성합니다.
 
 ```powershell
 .\.venv\Scripts\python.exe -X utf8 -m ingestion.build_index
@@ -56,11 +55,11 @@ PDF가 처음 등록되거나 변경됐다면 앱 실행 전에 검색 인덱스
 ## 테스트
 
 ```powershell
-# API 호출 없는 테스트
+# 외부 모델 호출 없는 테스트
 .\.venv\Scripts\python.exe -X utf8 -m unittest discover -s tests -v
 ```
 
-PDF는 `data/`에서 읽습니다. 검색 인덱스는 `vectorstores/`에 생성되며, PDF가 변경되면 해당 내용을 갱신합니다. `.env`, `.venv`, `vectorstores/`, `tmp/`는 `.gitignore`로 Git 업로드에서 제외합니다. API 키를 저장소에 추가하지 마세요.
+PDF는 `data/`에서 읽습니다. 검색 인덱스는 `vectorstores/`에 생성되며, PDF가 변경되면 해당 내용을 갱신합니다. `.env`, `.venv`, `vectorstores/`, `tmp/`는 `.gitignore`로 Git 업로드에서 제외합니다.
 
 ## GitHub에 변경사항 올리기
 

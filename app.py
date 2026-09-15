@@ -11,6 +11,14 @@ st.set_page_config(
     page_icon="📝",
 )
 
+st.markdown("""
+<style>
+    .stMarkdown, .stAlert { line-height: 1.75; }
+    [data-testid="stTable"] td { white-space: normal; vertical-align: top; }
+    [data-testid="stTable"] th { white-space: nowrap; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title(
     "📝자기평가보고서 초안 검토"
 )
@@ -105,47 +113,36 @@ if result and st.session_state.get("review_context_key") == context_key:
 
     st.divider()
 
-    st.subheader("원문")
-
-    st.write(
-        result.original_text
-    )
+    st.subheader("1. 입력 원문")
+    with st.container(border=True):
+        st.markdown(result.original_text)
 
 
-    st.subheader("수정안")
+    st.subheader("2. 수정안")
+    st.caption("입력한 사실만 사용해 생기부 기록 문장으로 다듬은 결과입니다.")
+    with st.container(border=True):
+        st.markdown(f"**{result.revised_text}**")
 
-    st.write(
-        result.revised_text
-    )
 
-
-    st.subheader("수정 이유")
-
-    st.write(
-        result.revision_reason
-    )
+    st.subheader("3. 수정 이유")
+    with st.container(border=True):
+        st.markdown(result.revision_reason)
 
 
     st.subheader(
-        "학교생활기록부 작성요령 근거"
+        "4. 학교생활기록부 작성요령 근거"
     )
 
     for evidence in (
         result.guideline_evidence
     ):
 
-        st.caption(
-            f"{evidence.source} "
-            f"· page {evidence.page}"
-        )
-
-        st.write(
-            evidence.content
-        )
+        with st.expander(f"{evidence.source} · metadata page {evidence.page}"):
+            st.markdown(evidence.content)
 
 
     st.subheader(
-        "대학 모집요강 근거"
+        "5. 대학 모집요강 근거"
     )
 
     if result.college_criteria:
@@ -162,13 +159,13 @@ if result and st.session_state.get("review_context_key") == context_key:
 
 
     st.subheader(
-        "주의사항"
+        "6. 추가 확인사항"
     )
 
-    st.write(
-        result.caution
-        or "추가 주의사항 없음"
-    )
+    if result.caution:
+        st.warning(result.caution)
+    else:
+        st.success("추가로 확인할 사항이 없습니다.")
 
     if result.record_context:
         with st.expander("검토에 참고한 기존 생기부 구간"):

@@ -13,8 +13,8 @@ from streamlit.testing.v1 import AppTest
 from config import PROJECT_ROOT
 from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
 from rag.chain import (
-    CollegeCriterionSelection, Evidence, ReviewResult, SAMPLE_DRAFT,
-    build_college_criteria, review_draft, select_evidence, validate_evidence,
+    Evidence, ReviewResult, SAMPLE_DRAFT, _conservative_rewrite, _looks_like_record_sentence,
+    extract_college_criteria, review_draft, select_evidence, validate_evidence,
 )
 from ingestion.build_index import sync_vectorstore
 
@@ -32,6 +32,24 @@ class CountingEmbeddings(Embeddings):
 
 
 class RagTests(unittest.TestCase):
+    def test_revised_text_rejects_guidance_and_evidence(self):
+        self.assertTrue(_looks_like_record_sentence("Python으로 데이터를 분석하고 문제 해결 과정을 수행함."))
+        for text in (
+            "탐구역량이 드러나도록 작성할 것.",
+            "대학 평가기준과 반영 비율을 고려해야 함.",
+            "student_record_rule.pdf 근거를 참고함.",
+        ):
+            with self.subTest(text=text):
+                self.assertFalse(_looks_like_record_sentence(text))
+        self.assertFalse(_looks_like_record_sentence(
+            "Python으로 데이터를 수집하고 시각화하여 논리적 사고력을 기름.",
+            "Python으로 데이터를 분석함.",
+        ))
+        self.assertEqual(
+            _conservative_rewrite("데이터 분석 프로젝트를 진행하며 Python으로 데이터를 분석함."),
+            "데이터 분석 프로젝트에서 Python을 활용해 데이터를 분석함",
+        )
+
     def test_previous_record_text_extraction_and_validation(self):
         self.assertEqual(extract_context("record.txt", "기존 활동".encode("utf-8")), "기존 활동")
         for name, content in (("record.txt", b""), ("record.txt", b"\xff"), ("record.docx", b"x")):
@@ -57,7 +75,7 @@ class RagTests(unittest.TestCase):
             ChunkAssessment(activity_summary="다른 활동", relevance=0),
         ]
         with patch("rag.attachment.split_record", return_value=["처음", "중간 원문", "마지막"]), patch(
-            "rag.attachment.ChatOpenAI"
+            "rag.attachment.ChatOllama"
         ) as model_class:
             model = model_class.return_value.with_structured_output.return_value
             model.invoke.side_effect = assessments
@@ -69,8 +87,6 @@ class RagTests(unittest.TestCase):
 
     def test_previous_record_is_passed_as_context_without_changing_search_query(self):
         with patch("rag.chain.load_vectorstores", return_value=(object(), object())), patch(
-            "rag.chain.check_api_key"
-        ), patch(
             "rag.chain.prepare_record_context", return_value="선택된 맥락"
         ) as prepare, patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
             "rag.chain.retrieve_guideline_context", return_value=[]
@@ -83,20 +99,20 @@ class RagTests(unittest.TestCase):
         self.assertEqual(guideline.call_args.args[1], "새 초안")
         self.assertEqual(generate.call_args.args, ("새 초안", [], [], "선택된 맥락", "성균관대학교", "소프트웨어학과"))
 
-    def test_college_criteria_must_match_retrieved_text(self):
+    def test_college_criteria_are_extracted_from_source(self):
         document = Document(
-            page_content="학업역량 40% 탐구역량 40% 잠재역량 20%",
-            metadata={"source": "guide.pdf", "page": 71},
+            page_content="학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)\n공동체의식(100점)",
+            metadata={"source": "college_table.pdf", "page": 71},
         )
-        selected = CollegeCriterionSelection(
-            area="학업역량", weight="40%", evidence_id=1,
-            recommendation="현재 초안은 탐구 과정이 부족합니다. 성균관대학교는 학업역량을 40% 평가하므로 분석 과정을 구체화해야 합니다.",
+        criteria, evidence_ids = extract_college_criteria(
+            [document], "Python으로 데이터를 분석함.", "성균관대학교",
         )
-        criteria = build_college_criteria([selected], [document])
-        self.assertEqual(criteria[0].weight, "40%")
-        for changes in ({"area": "학생부 평가"}, {"weight": "50%"}, {"evidence_id": 2}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                build_college_criteria([selected.model_copy(update=changes)], [document])
+        self.assertEqual(
+            [(item.area, item.weight) for item in criteria],
+            [("학업역량", "40%"), ("탐구역량", "40%"), ("잠재역량", "20%")],
+        )
+        self.assertEqual(evidence_ids, [1])
+        self.assertNotIn("공동체의식", [item.area for item in criteria])
 
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()
