@@ -8,9 +8,9 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
+from config import check_api_key
 from rag.attachment import prepare_record_context
 from rag.retriever import retrieve_college_context, retrieve_guideline_context
-from storage.vectorstore import check_api_key
 from storage.vectorstore import load_vectorstores
 
 SAMPLE_DRAFT = "데이터 분석 프로젝트를 진행하며 Python을 활용해 데이터를 분석하고 문제 해결 능력을 향상하였다."
@@ -22,14 +22,32 @@ class Evidence(BaseModel):
     content: str = Field(description="검색된 본문에서 그대로 복사한 연속된 근거 문구")
 
 
+class CollegeCriterion(BaseModel):
+    area: str
+    weight: str
+    recommendation: str
+    source: str
+    page: int | None = None
+
+
+class CollegeCriterionSelection(BaseModel):
+    area: str = Field(description="모집요강 원문에 있는 학생부 서류평가 영역명")
+    weight: str = Field(description="원문에 있는 반영 비율 또는 배점. 확인할 수 없으면 '확인 불가'")
+    evidence_id: int = Field(description="해당 영역과 비율이 나온 대학 검색 결과 번호")
+    recommendation: str = Field(description="생기부 작성 전문가와 대학 입학처 평가자의 관점에서 현재 초안의 부족한 점과 구체적인 수정 방향을 대학명·평가영역·비율과 연결한 문장")
+
+
 class ReviewResult(BaseModel):
     original_text: str
     revised_text: str
     revision_reason: str
     guideline_evidence: list[Evidence]
     college_evidence: list[Evidence]
+    college_criteria: list[CollegeCriterion] = Field(default_factory=list)
     caution: str
     record_context: str = ""
+    university: str = ""
+    department: str = ""
 
 
 class ReviewSelection(BaseModel):
@@ -37,11 +55,11 @@ class ReviewSelection(BaseModel):
     revised_text: str
     revision_reason: str = Field(description="단순한 어휘 교체 설명이 아니라, 선택한 근거의 파일명과 metadata page를 명시하고 수정 방향과 연결한 설명")
     guideline_evidence_ids: list[int] = Field(description="사용한 작성요령 근거 번호 목록 (1부터 시작)")
-    college_evidence_ids: list[int] = Field(description="사용한 대학 모집요강 근거 번호 목록 (1부터 시작)")
+    college_criteria: list[CollegeCriterionSelection] = Field(description="원문에서 확인된 학생부 평가영역과 반영비율만 포함")
     caution: str
 
 
-SYSTEM_PROMPT = """당신은 학생이 직접 작성한 학교생활기록부 초안을 검토하는 AI다.
+SYSTEM_PROMPT = """당신은 학교생활기록부 작성 전문가이자 대학 입학처의 학생부종합전형 평가 담당자다.
 학생이 하지 않은 활동, 성과, 수치, 사용 기술을 임의로 추가하지 않는다.
 제공된 교육부 작성요령과 대학 모집요강 검색 결과만 근거로 사용한다.
 검색 결과에서 확인되지 않는 내용을 사실처럼 단정하지 않는다.
@@ -57,14 +75,23 @@ SYSTEM_PROMPT = """당신은 학생이 직접 작성한 학교생활기록부 �
 첨부 내용만으로 새 초안의 사실을 단정하거나 대학·작성요령의 근거로 인용하지 않는다.
 초안에 없는 활동·성과는 첨부에 있더라도 수정안에 추가하지 말고 필요하면 확인 사항으로 제안한다.
 한국어로 응답한다.
-guideline_evidence_ids와 college_evidence_ids에는 실제 사용한 각 문서군의 근거 번호만 넣는다.
-두 문서군의 근거 번호는 각각 1부터 시작하며 서로 혼동하지 않는다.
+guideline_evidence_ids에는 실제 사용한 작성요령 근거 번호만 넣는다.
+college_criteria의 evidence_id에는 실제 사용한 대학 검색 결과 번호만 넣는다.
 인용 원문은 코드가 선택된 검색 결과에서 가져오므로 인용 문구를 새로 작성하지 않는다.
 관련 근거가 없으면 해당 evidence_ids 목록을 비우고 근거 부족을 caution에 명시한다.
 
 다음 순서로 검토한다.
 1. 작성요령에서 활동을 관찰·평가하고 구체적 사실을 기록하는 기준을 찾아 초안과 비교한다.
-2. 대학 검색 결과에서 초안의 활동과 관련된 평가요소를 확인한다. 관련된 평가요소가 있으면
+2. 희망 대학과 학과를 고려해 대학 검색 결과에서 학생부 서류평가 영역과 반영 비율을 확인한다.
+   대학명, 파일명, 학생부로 평가한다는 일반 설명은 평가영역으로 만들지 않는다.
+   영역명과 비율 또는 배점이 같은 검색 결과에서 확인되는 항목만 college_criteria에 넣는다.
+   비율이 원문에 없으면 추측하지 말고 '확인 불가'로 표시한다.
+   recommendation은 현재 초안의 실제 문장을 먼저 진단하고 부족한 점을 구체적으로 밝힌다.
+   이어서 희망 대학이 해당 역량을 해당 비율로 평가한다는 기준과 수정 방향을 논리적으로 연결한다.
+   단순히 '역량이 드러나게 서술해야 한다'고 반복하지 말고, 초안에 빠진 역할·과정·근거·결과 중 무엇을
+   확인하여 어떤 방식으로 표현해야 하는지 생기부 작성 전문가와 입학처 평가자의 관점에서 설명한다.
+   원문에 없는 활동이나 성과를 만들어 내지 말고, 부족한 사실은 추가 확인이 필요한 항목으로 제안한다.
+   관련된 평가요소가 있으면
    해당 대학 근거를 선택하고 revision_reason에 활동의 어떤 과정을 확인하면 좋을지 연결해서 설명한다.
    예를 들어 탐구활동을 했다는 초안과 탐구역량 평가 기준은 관련성이 있다.
    관련 근거가 없을 때에만 대학 근거 목록을 비운다. 비율은 검색 본문에 있을 때에만 언급한다.
@@ -116,16 +143,48 @@ def select_evidence(evidence_ids: list[int], documents: list[Document]) -> list[
     return evidence
 
 
+def build_college_criteria(
+    selections: list[CollegeCriterionSelection], documents: list[Document],
+) -> list[CollegeCriterion]:
+    """평가영역과 비율이 선택한 모집요강 검색 원문에 실제로 있는지 확인합니다."""
+    criteria = []
+    seen = set()
+    for item in selections:
+        if not 1 <= item.evidence_id <= len(documents):
+            raise ValueError("[대학 평가기준 검증] 검색 결과에 없는 근거 번호입니다.")
+        document = documents[item.evidence_id - 1]
+        compact_source = "".join(document.page_content.split())
+        area = item.area.strip()
+        weight = item.weight.strip()
+        if not area or "".join(area.split()) not in compact_source:
+            raise ValueError("[대학 평가기준 검증] 평가영역이 모집요강 검색 원문과 일치하지 않습니다.")
+        if weight != "확인 불가" and (not weight or "".join(weight.split()) not in compact_source):
+            raise ValueError("[대학 평가기준 검증] 반영비율이 모집요강 검색 원문과 일치하지 않습니다.")
+        key = (area, weight)
+        if key in seen:
+            continue
+        seen.add(key)
+        criteria.append(CollegeCriterion(
+            area=area,
+            weight=weight,
+            recommendation=item.recommendation,
+            source=Path(document.metadata["source"]).name,
+            page=document.metadata.get("page"),
+        ))
+    return criteria
+
+
 def generate_review(
     student_draft: str, guideline_results: list[Document], college_results: list[Document],
-    previous_record: str = "",
+    previous_record: str = "", university: str = "", department: str = "",
 ) -> ReviewResult:
     check_api_key()
     if not student_draft.strip():
         raise ValueError("생기부 초안을 입력하세요.")
     prompt = ChatPromptTemplate.from_messages([
         ("system", SYSTEM_PROMPT),
-        ("human", "[학생 작성 내용]\n{student_draft}\n\n"
+        ("human", "[희망 대학]\n{university}\n[희망 학과]\n{department}\n\n"
+         "[학생 작성 내용]\n{student_draft}\n\n"
          "[기존 생기부: 맥락 파악용, 공식 근거 아님]\n{previous_record}\n\n"
          "[교육부 생기부 작성요령 검색 결과]\n{guideline_context}\n\n"
          "[대학 모집요강 검색 결과]\n{college_context}"),
@@ -137,6 +196,8 @@ def generate_review(
     try:
         selection = (prompt | model).invoke({
             "student_draft": student_draft,
+            "university": university,
+            "department": department,
             "previous_record": previous_record or "첨부 없음",
             "guideline_context": format_context(guideline_results),
             "college_context": format_context(college_results),
@@ -148,14 +209,19 @@ def generate_review(
         ) from error
     if not isinstance(selection, ReviewSelection):
         raise ValueError("[8단계 출력 검증] 구조화된 응답을 받지 못했습니다.")
+    college_criteria = build_college_criteria(selection.college_criteria, college_results)
+    criterion_evidence_ids = [item.evidence_id for item in selection.college_criteria]
     result = ReviewResult(
         original_text=student_draft,
         revised_text=selection.revised_text,
         revision_reason=selection.revision_reason,
         guideline_evidence=select_evidence(selection.guideline_evidence_ids, guideline_results),
-        college_evidence=select_evidence(selection.college_evidence_ids, college_results),
+        college_evidence=select_evidence(criterion_evidence_ids, college_results),
+        college_criteria=college_criteria,
         caution=selection.caution,
         record_context=previous_record,
+        university=university,
+        department=department,
     )
     # 문서명과 페이지 표기는 모델의 표현 방식에 맡기지 않고 실제 근거에서 생성합니다.
     references = list(dict.fromkeys(
@@ -170,7 +236,10 @@ def generate_review(
 
 
 def review_draft(
-    student_draft: str
+    student_draft: str,
+    previous_record: str = "",
+    university: str = "성균관대학교",
+    department: str = "",
 ) -> ReviewResult:
 
     if not student_draft.strip():
@@ -187,6 +256,8 @@ def review_draft(
             retrieve_college_context(
                 college_store,
                 student_draft,
+                university,
+                department,
             )
         )
 
@@ -204,8 +275,15 @@ def review_draft(
             f"({type(error).__name__})"
         ) from error
 
+    if previous_record:
+        check_api_key()
+        previous_record = prepare_record_context(previous_record, student_draft)
+
     return generate_review(
         student_draft,
         guideline_results,
         college_results,
+        previous_record,
+        university,
+        department,
     )

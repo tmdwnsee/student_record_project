@@ -7,7 +7,10 @@ from langchain_core.documents import Document
 COLLEGE_QUERY = """
 학생부종합전형
 서류평가
-평가 영역 및 반영 비율
+평가영역
+반영비율
+배점
+퍼센트
 평가요소
 학업역량
 탐구역량
@@ -30,6 +33,8 @@ GUIDELINE_QUERY = """
 def retrieve_college_context(
     store: Chroma,
     student_draft: str,
+    university: str = "",
+    department: str = "",
 ) -> list[Document]:
 
     query = f"""
@@ -37,11 +42,17 @@ def retrieve_college_context(
 
 검토할 학생 활동:
 {student_draft}
+
+희망 대학:
+{university}
+
+희망 학과:
+{department}
 """
 
     return store.similarity_search(
         query,
-        k=5,
+        k=8,
     )
 
 

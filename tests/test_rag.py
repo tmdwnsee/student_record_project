@@ -3,16 +3,20 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
 from streamlit.testing.v1 import AppTest
 
+from config import PROJECT_ROOT
 from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
-from rag.chain import Evidence, ReviewResult, SAMPLE_DRAFT, review_draft, select_evidence, validate_evidence
-from ingestion.loader import PROJECT_ROOT
-from storage.vectorstore import sync_vectorstore
+from rag.chain import (
+    CollegeCriterionSelection, Evidence, ReviewResult, SAMPLE_DRAFT,
+    build_college_criteria, review_draft, select_evidence, validate_evidence,
+)
+from ingestion.build_index import sync_vectorstore
 
 
 class CountingEmbeddings(Embeddings):
@@ -33,6 +37,13 @@ class RagTests(unittest.TestCase):
         for name, content in (("record.txt", b""), ("record.txt", b"\xff"), ("record.docx", b"x")):
             with self.subTest(name=name, content=content), self.assertRaises(ValueError):
                 extract_context(name, content)
+
+    def test_uploaded_pdf_uses_shared_pdf_pipeline(self):
+        pages = [SimpleNamespace(text="첫 페이지"), SimpleNamespace(text="둘째 페이지")]
+        with patch("rag.attachment.process_pdf", return_value=pages) as process:
+            text = extract_context("record.pdf", b"fake pdf bytes")
+        self.assertEqual(text, "첫 페이지\n둘째 페이지")
+        self.assertEqual(process.call_args.kwargs["document_type"], "student_record")
 
     def test_whole_record_is_read_and_only_relevant_passages_are_selected(self):
         full_text = "앞부분 " + "가" * 6_000 + " 끝부분 활동"
@@ -57,16 +68,35 @@ class RagTests(unittest.TestCase):
         self.assertNotIn("마지막", context)
 
     def test_previous_record_is_passed_as_context_without_changing_search_query(self):
-        with patch("rag.chain.check_api_key"), patch(
+        with patch("rag.chain.load_vectorstores", return_value=(object(), object())), patch(
+            "rag.chain.check_api_key"
+        ), patch(
             "rag.chain.prepare_record_context", return_value="선택된 맥락"
         ) as prepare, patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
             "rag.chain.retrieve_guideline_context", return_value=[]
         ) as guideline, patch("rag.chain.generate_review") as generate:
-            review_draft("새 초안", object(), object(), "기존 생기부 내용")
+            review_draft("새 초안", "기존 생기부 내용", "성균관대학교", "소프트웨어학과")
         prepare.assert_called_once_with("기존 생기부 내용", "새 초안")
         self.assertEqual(college.call_args.args[1], "새 초안")
+        self.assertEqual(college.call_args.args[2], "성균관대학교")
+        self.assertEqual(college.call_args.args[3], "소프트웨어학과")
         self.assertEqual(guideline.call_args.args[1], "새 초안")
-        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "선택된 맥락"))
+        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "선택된 맥락", "성균관대학교", "소프트웨어학과"))
+
+    def test_college_criteria_must_match_retrieved_text(self):
+        document = Document(
+            page_content="학업역량 40% 탐구역량 40% 잠재역량 20%",
+            metadata={"source": "guide.pdf", "page": 71},
+        )
+        selected = CollegeCriterionSelection(
+            area="학업역량", weight="40%", evidence_id=1,
+            recommendation="현재 초안은 탐구 과정이 부족합니다. 성균관대학교는 학업역량을 40% 평가하므로 분석 과정을 구체화해야 합니다.",
+        )
+        criteria = build_college_criteria([selected], [document])
+        self.assertEqual(criteria[0].weight, "40%")
+        for changes in ({"area": "학생부 평가"}, {"weight": "50%"}, {"evidence_id": 2}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                build_college_criteria([selected.model_copy(update=changes)], [document])
 
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()
@@ -96,14 +126,14 @@ class RagTests(unittest.TestCase):
             original_text=SAMPLE_DRAFT, revised_text="데이터 분석 프로젝트에서 Python으로 데이터를 분석하였다.",
             revision_reason="검토 이유", guideline_evidence=[], college_evidence=[], caution="확인 필요",
         )
-        with patch("rag.vectorstore.build_vectorstores", return_value=(object(), object())), patch(
-            "rag.chain.review_draft", return_value=result,
-        ) as review:
+        with patch("rag.chain.review_draft", return_value=result) as review:
             app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run()
             self.assertFalse(app.exception)
             app.button[0].click().run()
             self.assertTrue(app.warning)
             review.assert_not_called()
+            self.assertEqual(app.selectbox[0].value, "성균관대학교")
+            app.text_input[0].set_value("소프트웨어학과")
             app.text_area[0].set_value(SAMPLE_DRAFT)
             app.button[0].click().run()
             self.assertFalse(app.exception)

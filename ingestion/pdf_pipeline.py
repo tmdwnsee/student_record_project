@@ -15,17 +15,14 @@ from __future__ import annotations
 
 import re
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
+from functools import lru_cache
+from io import BytesIO
 from pathlib import Path
 from typing import Callable, Iterable, Optional
 
-import fitz  # PyMuPDF
-
-try:
-    from langchain_core.documents import Document
-except Exception:  # pragma: no cover
-    Document = None  # type: ignore
+import pymupdf
+from langchain_core.documents import Document
 
 
 VISION_HOOK = Callable[[bytes, dict], str]
@@ -56,12 +53,8 @@ class PageResult:
 
 @dataclass
 class PipelineConfig:
-    quality_threshold: float = 0.60
     min_chars: int = 80
-    ocr_threshold: float = 0.55
     dpi: int = 180
-    keep_page_images: bool = False
-    max_block_gap: float = 12.0
 
 
 # PDF 문서별 검색 품질을 높이기 위한 표준 헤딩 후보
@@ -80,14 +73,18 @@ HEADING_PATTERNS = [
 
 def _run_pdftotext(path: Path) -> list[str]:
     """pdftotext -layout 결과를 페이지 단위 문자열로 반환."""
-    proc = subprocess.run(
-        ["pdftotext", "-layout", str(path), "-"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=True,
-    )
+    try:
+        proc = subprocess.run(
+            ["pdftotext", "-layout", str(path), "-"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        # Poppler가 없거나 추출에 실패하면 페이지별 PyMuPDF 단계부터 진행합니다.
+        return []
     return proc.stdout.split("\f")
 
 
@@ -150,7 +147,9 @@ def quality_check(
     score -= min(0.25, noise * 3.0)
     score = max(0.0, min(1.0, score))
 
-    ok = score >= 0.60 and len(text.strip()) >= min_chars and noise <= 0.02
+    readable = len(text.strip()) >= min_chars and noise <= 0.02 and (kr >= 0.05 or alnum >= 0.25)
+    expected_content_found = not expected_terms or expected > 0
+    ok = readable and expected_content_found
     return QualityReport(ok, score, len(text), kr, alnum, noise, headings, expected, issues)
 
 
@@ -161,11 +160,11 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def extract_pymupdf_text(doc: fitz.Document, page_number: int) -> str:
+def extract_pymupdf_text(doc: pymupdf.Document, page_number: int) -> str:
     return _clean_text(doc[page_number - 1].get_text("text", sort=True))
 
 
-def extract_pymupdf_blocks(doc: fitz.Document, page_number: int) -> str:
+def extract_pymupdf_blocks(doc: pymupdf.Document, page_number: int) -> str:
     blocks = doc[page_number - 1].get_text("blocks", sort=True)
     parts: list[str] = []
     for block in blocks:
@@ -179,32 +178,32 @@ def extract_pymupdf_blocks(doc: fitz.Document, page_number: int) -> str:
     return _clean_text("\n".join(parts))
 
 
-def render_page(doc: fitz.Document, page_number: int, dpi: int = 180) -> bytes:
+def render_page(doc: pymupdf.Document, page_number: int, dpi: int = 180) -> bytes:
     page = doc[page_number - 1]
     scale = dpi / 72.0
-    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+    pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
     return pix.tobytes("png")
 
 
-def rapidocr_text(image_bytes: bytes) -> tuple[str, float]:
-    """RapidOCR 어댑터. 패키지 미설치 시 명확한 안내를 반환."""
+@lru_cache(maxsize=1)
+def _get_ocr_engine():
     try:
         from rapidocr_onnxruntime import RapidOCR
-        from PIL import Image
-        import numpy as np
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
-            "RapidOCR가 설치되어 있지 않습니다. requirements-pdf.txt의 "
-            "rapidocr_onnxruntime을 설치하세요."
+            "RapidOCR가 설치되어 있지 않습니다. requirements.txt를 설치하세요."
         ) from exc
+    return RapidOCR()
 
-    with tempfile.NamedTemporaryFile(suffix=".png") as tmp:
-        tmp.write(image_bytes)
-        tmp.flush()
-        image = np.array(Image.open(tmp.name).convert("RGB"))
 
-    engine = RapidOCR()
-    result, _ = engine(image)
+def rapidocr_text(image_bytes: bytes) -> tuple[str, float]:
+    """이미지에서 OCR 텍스트를 추출합니다. 엔진은 한 번만 생성해 재사용합니다."""
+    from PIL import Image
+    import numpy as np
+
+    image = np.array(Image.open(BytesIO(image_bytes)).convert("RGB"))
+
+    result, _ = _get_ocr_engine()(image)
     if not result:
         return "", 0.0
 
@@ -240,7 +239,7 @@ def process_pdf(
         raise FileNotFoundError(path)
 
     pdftotext_pages = _run_pdftotext(path)
-    doc = fitz.open(path)
+    doc = pymupdf.open(path)
     results: list[PageResult] = []
 
     for pno in range(1, doc.page_count + 1):
@@ -266,7 +265,7 @@ def process_pdf(
                 text, q, method = candidate, cq, "pymupdf-blocks"
 
         # 4) RapidOCR
-        if not q.ok or q.score < config.ocr_threshold:
+        if not q.ok:
             image_bytes = render_page(doc, pno, config.dpi)
             try:
                 candidate, ocr_score = rapidocr_text(image_bytes)
@@ -280,7 +279,7 @@ def process_pdf(
                 pass
 
         # 5) Vision 연결 지점
-        if (not q.ok or q.score < config.quality_threshold) and vision_hook:
+        if not q.ok and vision_hook:
             image_bytes = render_page(doc, pno, config.dpi)
             metadata = {
                 "document_type": document_type,
@@ -294,18 +293,22 @@ def process_pdf(
             if cq.score >= q.score:
                 text, q, method = _clean_text(candidate), cq, "vision"
 
+        printed_page = detect_printed_page(text, pno)
         results.append(
             PageResult(
                 page_number=pno,
-                printed_page=detect_printed_page(text, pno),
+                printed_page=printed_page,
                 text=text,
                 method=method,
                 quality=q,
                 metadata={
                     "document_type": document_type,
+                    "source": str(path.resolve()),
+                    "page": pno - 1,
+                    "page_label": str(printed_page or pno),
                     "source_file": path.name,
                     "page_number": pno,
-                    "printed_page": detect_printed_page(text, pno),
+                    "printed_page": printed_page,
                     "extraction_method": method,
                     "quality_score": round(q.score, 4),
                     "needs_review": not q.ok,
@@ -331,17 +334,14 @@ def detect_printed_page(text: str, fallback: Optional[int] = None) -> Optional[i
 
 
 def page_results_to_documents(results: Iterable[PageResult]):
-    if Document is None:
-        raise RuntimeError("langchain-core가 필요합니다.")
-    docs = []
-    for r in results:
-        if not r.text.strip():
-            continue
-        docs.append(Document(page_content=r.text, metadata=r.metadata))
-    return docs
+    return [
+        Document(page_content=result.text, metadata=result.metadata)
+        for result in results
+        if result.text.strip()
+    ]
 
 
-def targeted_pages_for_document(document_type: str, *, query: str = "") -> dict[int, list[str]]:
+def targeted_pages_for_document(document_type: str) -> dict[int, list[str]]:
     """현재 프로젝트에서 먼저 품질을 강하게 검사할 핵심 페이지 정의."""
     if document_type == "skku_2027":
         return {
@@ -368,20 +368,6 @@ def summarize_page_failures(results: Iterable[PageResult]) -> dict:
             for r in sorted(results, key=lambda x: x.quality.score)[:10]
         ],
     }
-
-
-def discover_pages_by_terms(pdf_path: str | Path, terms: list[str], *, min_hits: int = 1) -> list[int]:
-    """OCR 이전 단계에서 목표 페이지를 빠르게 찾는다.
-
-    텍스트 계층이 없는 PDF는 빈 결과가 나오므로, 그 경우 process_pdf(...)
-    결과의 OCR/Vision 텍스트를 대상으로 다시 호출하는 것을 권장합니다.
-    """
-    pages = _run_pdftotext(Path(pdf_path))
-    hits: list[int] = []
-    for idx, text in enumerate(pages, 1):
-        if sum(1 for term in terms if term in text) >= min_hits:
-            hits.append(idx)
-    return hits
 
 
 def build_source_documents(

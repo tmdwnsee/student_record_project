@@ -5,7 +5,6 @@
 
 import hashlib
 import json
-from ingestion.loader import load_pdf, split_documents
 from chromadb.config import Settings
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
@@ -22,8 +21,8 @@ from config import (
     GUIDELINE_COLLECTION,
 )
 
-from ingestion.loader import (
-    load_pdf,
+from ingestion.prepare_documents import (
+    prepare_documents,
     split_documents,
 )
 
@@ -114,6 +113,8 @@ def sync_vectorstore(
         f"삭제 {len(stale_ids)}개"
     )
 
+    return store
+
 
 def build_index(
     pdf_path,
@@ -123,7 +124,7 @@ def build_index(
 ):
     print(f"\nPDF 로딩: {pdf_path.name}")
 
-    documents = load_pdf(pdf_path)
+    documents = prepare_documents(pdf_path)
 
     print(
         f"페이지 수: {len(documents)}"
@@ -153,19 +154,12 @@ def main():
 
     print("Vector Store 갱신 시작")
 
-    build_index(
-        pdf_path=COLLEGE_PDF,
-        persist_directory=COLLEGE_VECTORSTORE,
-        collection_name=COLLEGE_COLLECTION,
-        embedding=embedding,
+    sources = (
+        (COLLEGE_PDF, COLLEGE_VECTORSTORE, COLLEGE_COLLECTION),
+        (GUIDELINE_PDF, GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION),
     )
-
-    build_index(
-        pdf_path=GUIDELINE_PDF,
-        persist_directory=GUIDELINE_VECTORSTORE,
-        collection_name=GUIDELINE_COLLECTION,
-        embedding=embedding,
-    )
+    for pdf_path, persist_directory, collection_name in sources:
+        build_index(pdf_path, persist_directory, collection_name, embedding)
 
     print("\nVector Store 갱신 완료")
 

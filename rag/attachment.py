@@ -1,12 +1,14 @@
 """업로드한 기존 생기부의 전체 텍스트를 읽고 관련 활동을 고릅니다."""
 
-from io import BytesIO
 import os
+import tempfile
+from pathlib import Path
 
 from langchain_openai import ChatOpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pydantic import BaseModel, Field
-from pypdf import PdfReader
+
+from ingestion.pdf_pipeline import process_pdf
 
 MAX_FILE_BYTES = 10 * 1024 * 1024
 CHUNK_SIZE = 5_000
@@ -25,10 +27,11 @@ def extract_context(filename: str, content: bytes) -> str:
     suffix = filename.lower().rsplit(".", 1)[-1]
     try:
         if suffix == "pdf":
-            reader = PdfReader(BytesIO(content))
-            if reader.is_encrypted:
-                raise ValueError("암호가 걸린 PDF는 사용할 수 없습니다.")
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "uploaded_record.pdf"
+                path.write_bytes(content)
+                pages = process_pdf(path, document_type="student_record")
+                text = "\n".join(page.text for page in pages)
         elif suffix == "txt":
             text = content.decode("utf-8-sig")
         else:
@@ -36,10 +39,10 @@ def extract_context(filename: str, content: bytes) -> str:
     except ValueError:
         raise
     except Exception as error:
-        raise ValueError("첨부 파일에서 텍스트를 읽지 못했습니다. 텍스트가 포함된 PDF 또는 UTF-8 TXT를 사용하세요.") from error
+        raise ValueError("첨부 파일에서 텍스트를 읽지 못했습니다. PDF 또는 UTF-8 TXT 파일을 확인하세요.") from error
     text = text.strip()
     if not text:
-        raise ValueError("첨부 파일에 추출할 텍스트가 없습니다. 스캔 이미지 PDF는 지원하지 않습니다.")
+        raise ValueError("첨부 파일에서 텍스트를 추출하지 못했습니다.")
     return text
 
 

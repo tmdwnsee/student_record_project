@@ -20,9 +20,7 @@ from config import (
 )
 
 
-def validate_vectorstore(
-    directory
-):
+def validate_vectorstore(directory):
     database_file = directory / "chroma.sqlite3"
 
     if not database_file.exists():
@@ -40,46 +38,21 @@ python -m ingestion.build_index
         )
 
 
+def _open_store(directory, collection, embedding):
+    validate_vectorstore(directory)
+    return Chroma(
+        collection_name=collection,
+        persist_directory=str(directory),
+        embedding_function=embedding,
+        client_settings=Settings(anonymized_telemetry=False),
+    )
+
+
 @lru_cache(maxsize=1)
 def load_vectorstores():
-
     check_api_key()
-
-    validate_vectorstore(
-        COLLEGE_VECTORSTORE
-    )
-
-    validate_vectorstore(
-        GUIDELINE_VECTORSTORE
-    )
-
-    embedding = OpenAIEmbeddings(
-        model=EMBEDDING_MODEL
-    )
-
-    college_store = Chroma(
-        collection_name=COLLEGE_COLLECTION,
-        persist_directory=str(
-            COLLEGE_VECTORSTORE
-        ),
-        embedding_function=embedding,
-        client_settings=Settings(
-            anonymized_telemetry=False
-        ),
-    )
-
-    guideline_store = Chroma(
-        collection_name=GUIDELINE_COLLECTION,
-        persist_directory=str(
-            GUIDELINE_VECTORSTORE
-        ),
-        embedding_function=embedding,
-        client_settings=Settings(
-            anonymized_telemetry=False
-        ),
-    )
-
+    embedding = OpenAIEmbeddings(model=EMBEDDING_MODEL)
     return (
-        college_store,
-        guideline_store,
+        _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, embedding),
+        _open_store(GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION, embedding),
     )
