@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 st.title(
-    "자기평가보고서 초안 검토"
+    "📝자기평가보고서 초안 검토"
 )
 
 st.caption(
