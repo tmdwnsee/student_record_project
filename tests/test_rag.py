@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -14,6 +14,7 @@ from config import PROJECT_ROOT
 from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
 from rag.chain import SAMPLE_DRAFT, review_draft
 from rag.criteria import extract_college_criteria
+from rag.retriever import GUIDELINE_CANDIDATES_PER_QUERY, retrieve_guideline_context
 from rag.reviewer import ReviewResult
 from rag.validation import (
     Evidence,
@@ -38,6 +39,99 @@ class CountingEmbeddings(Embeddings):
 
 
 class RagTests(unittest.TestCase):
+    def test_guideline_queries_adapt_to_draft_instead_of_always_using_example_rules(self):
+        generic_store = Mock()
+        generic_store.similarity_search.return_value = []
+        retrieve_guideline_context(generic_store, "수학 문제의 풀이 과정을 비교하고 발표함")
+        generic_query_count = generic_store.similarity_search.call_count
+        self.assertEqual(generic_query_count, 5)
+
+        research_store = Mock()
+        research_store.similarity_search.return_value = []
+        retrieve_guideline_context(research_store, "연구 결과를 논문으로 작성하고 학회에서 발표함")
+        self.assertEqual(research_store.similarity_search.call_count, generic_query_count + 1)
+        self.assertTrue(all(
+            call.kwargs["k"] == GUIDELINE_CANDIDATES_PER_QUERY
+            for call in research_store.similarity_search.call_args_list
+        ))
+
+    def test_guideline_reranking_metadata_is_available_for_streamlit(self):
+        store = Mock()
+        store.similarity_search.return_value = [
+            Document(
+                page_content="학생의 구체적인 활동내용과 개별적 특성이 드러나야 함",
+                metadata={"source": "student_record_rule.pdf", "page": 23},
+            )
+        ]
+        result = retrieve_guideline_context(store, "탐구 활동을 수행함")
+        self.assertEqual(len(result), 1)
+        self.assertIsInstance(result[0].metadata["retrieval_score"], float)
+        self.assertTrue(result[0].metadata["retrieval_reasons"])
+        self.assertIn("개별적 특성", result[0].metadata["retrieval_keywords"])
+
+    def test_guideline_result_shows_the_triggering_original_sentence(self):
+        store = Mock()
+        store.similarity_search.return_value = [
+            Document(
+                page_content="논문을 학회지에 등재하거나 학회에서 발표한 사실은 기재할 수 없음",
+                metadata={"source": "student_record_rule.pdf", "page": 23},
+            )
+        ]
+        draft = "실험을 수행함. 실험 결과를 논문으로 작성하여 학회에서 발표함."
+        result = retrieve_guideline_context(store, draft)
+        self.assertIn("실험 결과를 논문으로 작성하여 학회에서 발표함.", result[0].metadata["draft_matches"])
+
+    def test_query_hit_without_rule_keywords_is_not_linked_to_draft(self):
+        store = Mock()
+        store.similarity_search.return_value = [
+            Document(
+                page_content="교육지원청 담당 부서에 문의하는 절차",
+                metadata={"source": "student_record_rule.pdf", "page": 25},
+            )
+        ]
+        result = retrieve_guideline_context(store, "논문을 작성하여 학회에서 발표함.")
+        self.assertTrue(result)
+        self.assertEqual(result[0].metadata["draft_matches"], [])
+        self.assertEqual(result[0].metadata["retrieval_keyword_groups"], {})
+
+    def test_unseen_evaluative_sentence_is_connected_semantically(self):
+        store = Mock()
+        store.similarity_search.return_value = [
+            Document(
+                page_content="교사가 직접 관찰한 사실을 기록하고 단순 사실을 과장하거나 부풀리지 않아야 함",
+                metadata={"source": "student_record_rule.pdf", "page": 24},
+            )
+        ]
+        sentence = "한국 현대문학에 대한 완벽한 이해력을 갖추고 다른 학생보다 뛰어난 능력을 보여주었다."
+        result = retrieve_guideline_context(store, sentence)
+        self.assertIn(sentence, result[0].metadata["draft_matches"])
+
+    def test_draft_sentences_are_linked_only_to_their_matching_rule_category(self):
+        store = Mock()
+        store.similarity_search.return_value = [
+            Document(
+                page_content=(
+                    "활동내용에 따른 개별적 특성이 드러나야 함. "
+                    "구체적인 특정 대학명과 상호명은 기재할 수 없음."
+                ),
+                metadata={"source": "student_record_rule.pdf", "page": 23},
+            )
+        ]
+        named = "성균관대학교 진학을 목표로 문학 활동에 참여함."
+        vague = "여러 활동에 매우 성실하게 참여함."
+        result = retrieve_guideline_context(store, f"{named} {vague}")
+        category_matches = result[0].metadata["draft_matches_by_category"]
+        self.assertIn(named, category_matches["특정 명칭 규정"])
+        self.assertNotIn(vague, category_matches["특정 명칭 규정"])
+        self.assertIn(vague, category_matches["구체성·개별성"])
+
+    def test_ordinary_good_score_does_not_trigger_exam_award_rule(self):
+        store = Mock()
+        store.similarity_search.return_value = []
+        retrieve_guideline_context(store, "모둠원이 좋은 점수를 받을 수 있도록 도와줌.")
+        queries = [call.args[0] for call in store.similarity_search.call_args_list]
+        self.assertFalse(any("공인어학시험 성적" in query for query in queries))
+
     def test_revised_text_rejects_guidance_and_evidence(self):
         self.assertTrue(looks_like_record_sentence("Python으로 데이터를 분석하고 문제 해결 과정을 수행함."))
         for text in (
@@ -107,11 +201,19 @@ class RagTests(unittest.TestCase):
 
     def test_college_criteria_are_extracted_from_source(self):
         document = Document(
-            page_content="학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)\n공동체의식(100점)",
+            page_content=(
+                "학업수월성(200점) 우리대학에 입학할 만한 충분한 학업능력을 보여주는가\n"
+                "학업역량(40%) - 학업 관련 활동 및 성취수준, 학업 태도, 학업 여건 등 학업충실성(200점)\n"
+                "탐구확장성(200점) 관심 분야에 대한 호기심과 이를 탐구하기 위한 노력이 있는가\n"
+                "탐구역량(40%) - 진로 탐색 의지, 지적 호기심과 탐구 의지\n"
+                "탐구주도성(200점) - 배움에 대한 관심 및 열의, 활동 내용 등\n"
+                "미래성장성(100점) 자기주도적 리더가 될 자질 및 발전가능성이 있는가\n"
+                "잠재역량(20%) - 자기주도성, 리더십, 이타성, 소통 능력, 성실성 등 공동체의식(100점)"
+            ),
             metadata={"source": "college_table.pdf", "page": 71},
         )
         criteria, evidence_ids = extract_college_criteria(
-            [document], "Python으로 데이터를 분석함.", "성균관대학교",
+            [document], "관심 분야의 자료를 조사하고 Python으로 데이터를 분석함.", "성균관대학교",
         )
         self.assertEqual(
             [(item.area, item.weight) for item in criteria],
@@ -119,6 +221,21 @@ class RagTests(unittest.TestCase):
         )
         self.assertEqual(evidence_ids, [1])
         self.assertNotIn("공동체의식", [item.area for item in criteria])
+        self.assertEqual(criteria[0].subcriteria, ["학업수월성", "학업충실성"])
+        self.assertEqual(criteria[1].subcriteria, ["탐구확장성", "탐구주도성"])
+        self.assertEqual(criteria[2].subcriteria, ["미래성장성", "공동체의식"])
+        self.assertEqual(
+            criteria[1].evaluation_question,
+            "관심 분야에 대한 호기심과 이를 탐구하기 위한 노력이 있는가",
+        )
+        self.assertEqual(
+            criteria[1].evaluation_points,
+            ["진로 탐색 의지, 지적 호기심과 탐구 의지", "배움에 대한 관심 및 열의, 활동 내용 등"],
+        )
+        self.assertEqual(criteria[1].draft_evidence, ["관심 분야의 탐구 과정"])
+        self.assertEqual(criteria[1].missing_aspects, ["탐구 범위의 확장"])
+        self.assertIn("조사·분석 방법", criteria[1].revision_direction)
+        self.assertIn("탐구확장성, 탐구주도성", criteria[1].recommendation)
 
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()

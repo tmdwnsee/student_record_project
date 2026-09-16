@@ -11,6 +11,12 @@ class Evidence(BaseModel):
     source: str = Field(description="검색 결과에 표시된 PDF 파일명")
     page: int | None = Field(default=None, description="검색 결과의 metadata page. 인쇄 쪽수와 다름")
     content: str = Field(description="검색된 본문에서 그대로 복사한 연속된 근거 문구")
+    retrieval_score: float | None = None
+    retrieval_reasons: list[str] = Field(default_factory=list)
+    retrieval_keywords: list[str] = Field(default_factory=list)
+    retrieval_keyword_groups: dict[str, list[str]] = Field(default_factory=dict)
+    draft_matches: list[str] = Field(default_factory=list)
+    draft_matches_by_category: dict[str, list[str]] = Field(default_factory=dict)
 
 
 def validate_evidence(evidence: list[Evidence], documents: list[Document]) -> None:
@@ -38,6 +44,12 @@ def select_evidence(evidence_ids: list[int], documents: list[Document]) -> list[
             source=Path(document.metadata["source"]).name,
             page=document.metadata["page"],
             content=document.page_content,
+            retrieval_score=document.metadata.get("retrieval_score"),
+            retrieval_reasons=document.metadata.get("retrieval_reasons", []),
+            retrieval_keywords=document.metadata.get("retrieval_keywords", []),
+            retrieval_keyword_groups=document.metadata.get("retrieval_keyword_groups", {}),
+            draft_matches=document.metadata.get("draft_matches", []),
+            draft_matches_by_category=document.metadata.get("draft_matches_by_category", {}),
         ))
     return evidence
 

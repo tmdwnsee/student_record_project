@@ -96,7 +96,10 @@ def format_guideline_context(documents: list[Document]) -> str:
 
 def format_college_criteria(criteria: list[CollegeCriterion]) -> str:
     return "\n".join(
-        f"- {item.area} {item.weight}: {item.recommendation}"
+        f"- {item.area} {item.weight}\n"
+        f"  하위 평가요소: {', '.join(item.subcriteria) or '확인되지 않음'}\n"
+        f"  평가 관점: {item.evaluation_question or ' / '.join(item.evaluation_points)}\n"
+        f"  초안 반영 방향: {item.recommendation}"
         for item in criteria
     ) or "확인된 대학 평가기준 없음"
 

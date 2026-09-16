@@ -75,7 +75,8 @@ def generate_review(
             f"Ollama가 실행 중인지와 {MODEL} 모델이 설치되어 있는지 확인하세요."
         ) from error
 
-    guideline_evidence_ids = list(range(1, min(3, len(guideline_results)) + 1))
+    # 재정렬된 작성요령 5개를 Streamlit 근거 영역에 모두 표시합니다.
+    guideline_evidence_ids = list(range(1, len(guideline_results) + 1))
     guideline_evidence = select_evidence(guideline_evidence_ids, guideline_results)
     college_evidence = select_evidence(criterion_evidence_ids, college_results)
 
