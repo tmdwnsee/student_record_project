@@ -12,9 +12,15 @@ from streamlit.testing.v1 import AppTest
 
 from config import PROJECT_ROOT
 from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
-from rag.chain import (
-    Evidence, ReviewResult, SAMPLE_DRAFT, _conservative_rewrite, _looks_like_record_sentence,
-    extract_college_criteria, review_draft, select_evidence, validate_evidence,
+from rag.chain import SAMPLE_DRAFT, review_draft
+from rag.criteria import extract_college_criteria
+from rag.reviewer import ReviewResult
+from rag.validation import (
+    Evidence,
+    conservative_rewrite,
+    looks_like_record_sentence,
+    select_evidence,
+    validate_evidence,
 )
 from ingestion.build_index import sync_vectorstore
 
@@ -33,20 +39,20 @@ class CountingEmbeddings(Embeddings):
 
 class RagTests(unittest.TestCase):
     def test_revised_text_rejects_guidance_and_evidence(self):
-        self.assertTrue(_looks_like_record_sentence("Python으로 데이터를 분석하고 문제 해결 과정을 수행함."))
+        self.assertTrue(looks_like_record_sentence("Python으로 데이터를 분석하고 문제 해결 과정을 수행함."))
         for text in (
             "탐구역량이 드러나도록 작성할 것.",
             "대학 평가기준과 반영 비율을 고려해야 함.",
             "student_record_rule.pdf 근거를 참고함.",
         ):
             with self.subTest(text=text):
-                self.assertFalse(_looks_like_record_sentence(text))
-        self.assertFalse(_looks_like_record_sentence(
+                self.assertFalse(looks_like_record_sentence(text))
+        self.assertFalse(looks_like_record_sentence(
             "Python으로 데이터를 수집하고 시각화하여 논리적 사고력을 기름.",
             "Python으로 데이터를 분석함.",
         ))
         self.assertEqual(
-            _conservative_rewrite("데이터 분석 프로젝트를 진행하며 Python으로 데이터를 분석함."),
+            conservative_rewrite("데이터 분석 프로젝트를 진행하며 Python으로 데이터를 분석함."),
             "데이터 분석 프로젝트에서 Python을 활용해 데이터를 분석함",
         )
 
