@@ -1,13 +1,29 @@
 # Python 3.12 / 두 PDF 기반 RAG 테스트
+
+# LangChain
 langchain-text-splitters==1.1.2
 langchain-ollama==1.1.0
 langchain-huggingface==1.2.2
-sentence-transformers==6.0.1
 langchain-chroma==1.1.0
+
+# Embedding / Transformers
+sentence-transformers==6.0.1
+torch
+torchvision
+
+# Vector DB
 chromadb==1.5.9
+
+# Validation
 pydantic==2.13.5
+
+# UI
 streamlit==1.63.0
+
+# PDF / OCR
 pymupdf==1.28.2
 rapidocr-onnxruntime==1.4.4
 pillow==12.3.0
+
+# Numeric
 numpy==2.3.5
