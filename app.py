@@ -1,13 +1,15 @@
 import hashlib
-import html
 import re
+import html
 import streamlit as st
 
 from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
-from rag.chain import generate_future_guide, review_draft
-
-
+from rag.chain import (
+    VALID_RECORD_SECTIONS,
+    generate_future_guide,
+    review_draft,
+)
 DISPLAY_MIN_GUIDELINE_SCORE = 0.28
 CATEGORY_LABELS = {
     "특정 명칭 규정": "특정 기관·대학·상호명 규정",
@@ -18,6 +20,13 @@ CATEGORY_LABELS = {
     "구체성·개별성": "구체적 활동·개별성",
 }
 
+RECORD_SECTIONS = [
+    "세특",
+    "자율자치활동",
+    "동아리활동",
+    "진로활동",
+    "행특",
+]
 
 def evidence_excerpt(content: str, keywords: list[str]) -> str:
     """검색 핵심어가 들어간 문단을 우선 표시하고 원문이 없으면 전체를 표시합니다."""
@@ -204,97 +213,147 @@ review_tab, guide_tab = st.tabs([
 ])
 
 with review_tab:
-    st.caption("자기평가보고서 초안을 입력하면, 작성요령과 실제 기록의 충돌 여부를 검토하고 정교한 수정안을 제시합니다.")
-    review_university = st.selectbox("희망 대학교", options=list(COLLEGE_GUIDES), key="review_university")
-    review_department = st.text_input("희망 학과", placeholder="예: 소프트웨어학과", key="review_department")
+    st.caption(
+        "학생이 작성한 초안을 교육부 학교생활기록부 작성요령에 따라 "
+        "검토하고 수정안을 생성합니다."
+    )
+
+    review_section = st.selectbox(
+        "초안을 입력할 생기부 항목",
+        options=RECORD_SECTIONS,
+        key="review_record_section",
+    )
+
     review_text = st.text_area(
         "자기평가보고서 초안",
         height=180,
-        placeholder="검토할 활동 내용을 입력하세요.",
+        placeholder="교사에게 전달할 생기부 기재 희망 내용을 입력하세요.",
         key="review_draft_input",
     )
-    review_uploaded_record = st.file_uploader(
-        "기존 생기부 첨부 (선택)",
-        type=["pdf", "txt"],
-        help="기존 활동을 이해하는 참고 자료로만 사용합니다. 텍스트 PDF 또는 UTF-8 TXT, 10MB 이하.",
-        key="review_uploaded_record",
-    )
-    review_upload_bytes = review_uploaded_record.getvalue() if review_uploaded_record else b""
+
     review_context_key = (
-        review_university,
-        review_department,
+        review_section,
         review_text,
-        hashlib.sha256(review_upload_bytes).hexdigest() if review_uploaded_record else "",
     )
 
-    if st.button("작성요령 검증 및 수정안 생성", key="review_button", type="primary"):
-        st.session_state.pop("review_result", None)
-        st.session_state.pop("review_context_key", None)
+    if st.button(
+        "작성요령 검증 및 수정안 생성",
+        key="review_button",
+        type="primary",
+    ):
+        st.session_state.pop(
+            "review_result",
+            None,
+        )
 
-        if not review_department.strip() or not review_text.strip():
-            st.warning("희망 학과와 자기평가보고서 초안을 모두 입력하세요.")
+        st.session_state.pop(
+            "review_context_key",
+            None,
+        )
+
+        if not review_text.strip():
+            st.warning(
+                "자기평가보고서 초안을 입력하세요."
+            )
+
         else:
             try:
-                previous_record = (
-                    extract_context(review_uploaded_record.name, review_upload_bytes)
-                    if review_uploaded_record else ""
-                )
-                with st.spinner("작성요령과 대학 기준을 기준으로 초안을 검증하는 중입니다..."):
+                with st.spinner(
+                    f"공통 작성요령과 {review_section} 작성요령을 "
+                    "검색해 초안을 수정하고 있습니다..."
+                ):
                     result = review_draft(
-                        review_text,
-                        previous_record,
-                        review_university,
-                        review_department.strip(),
+                        student_draft=review_text,
+                        record_section=review_section,
                     )
-                st.session_state["review_result"] = result
-                st.session_state["review_context_key"] = review_context_key
-            except Exception as error:
-                st.error(f"검증 실패: {error}")
 
-    review_result = st.session_state.get("review_result")
-    if review_result and st.session_state.get("review_context_key") == review_context_key:
+                st.session_state["review_result"] = result
+                st.session_state[
+                    "review_context_key"
+                ] = review_context_key
+
+            except Exception as error:
+                st.error(
+                    f"검증 실패: {error}"
+                )
+
+    review_result = st.session_state.get(
+        "review_result"
+    )
+
+    if (
+        review_result
+        and st.session_state.get(
+            "review_context_key"
+        )
+        == review_context_key
+    ):
         st.divider()
+
         st.subheader("1. 입력 원문")
+
         with st.container(border=True):
-            st.markdown(review_result.original_text)
+            st.write(
+                review_result.original_text
+            )
 
         st.subheader("2. 수정안")
-        st.caption("입력한 사실만 사용해 생기부 기록 문장으로 다듬은 결과입니다.")
+
         with st.container(border=True):
-            st.markdown(f"**{review_result.revised_text}**")
+            st.markdown(
+                f"**{review_result.revised_text}**"
+            )
 
-        st.subheader("3. 수정 이유")
+        st.subheader("3. 수정·삭제 이유")
+
         with st.container(border=True):
-            st.markdown(review_result.revision_reason)
+            st.markdown(
+                review_result.revision_reason
+            )
 
-        st.subheader("4. 학교생활기록부 작성요령 근거")
-        st.caption("문제가 발견된 원문을 한 문장씩 나누고, 관련성이 높은 작성요령만 연결했습니다.")
-        guideline_groups = guideline_display_groups(review_result.guideline_evidence)
-        if guideline_groups:
-            for expression, cards in guideline_groups:
-                st.markdown('<div class="expression-title">발견된 표현</div>', unsafe_allow_html=True)
-                st.markdown(f'<div class="expression-box">“{html.escape(expression)}”</div>', unsafe_allow_html=True)
-                render_guideline_card(cards)
-        else:
-            st.info("표시 기준을 충족하는 작성요령 근거가 없습니다.")
+        st.subheader(
+            "4. 학교생활기록부 작성요령 근거"
+        )
 
-        st.subheader("5. 대학 모집요강 근거")
-        if review_result.college_criteria:
-            st.caption("평가영역별로 대학이 확인하는 내용과 현재 초안의 보완 방향을 나누어 표시합니다.")
-            for criterion in review_result.college_criteria:
-                render_college_criterion(criterion)
-        else:
-            st.write("모집요강에서 학생부 평가영역과 반영비율을 확인하지 못했습니다.")
+        common_evidence = [
+            item
+            for item in review_result.guideline_evidence
+            if "공통" in item.guideline_scopes
+        ]
 
-        st.subheader("6. 추가 확인사항")
+        section_evidence = [
+            item
+            for item in review_result.guideline_evidence
+            if review_result.record_section
+            in item.guideline_scopes
+        ]
+
+        st.markdown("#### 공통 작성요령")
+
+        for evidence in common_evidence:
+            with st.expander(
+                f"{evidence.source} "
+                f"· metadata page {evidence.page}"
+            ):
+                st.write(evidence.content)
+
+        st.markdown(
+            f"#### {review_result.record_section} 작성요령"
+        )
+
+        for evidence in section_evidence:
+            with st.expander(
+                f"{evidence.source} "
+                f"· metadata page {evidence.page}"
+            ):
+                st.write(evidence.content)
+
+        st.subheader("5. 추가 확인사항")
+
         if review_result.caution:
-            st.warning(review_result.caution)
-        else:
-            st.success("추가로 확인할 사항이 없습니다.")
-
-        if review_result.record_context:
-            with st.expander("검토에 참고한 기존 생기부 구간"):
-                st.write(review_result.record_context)
+            st.warning(
+                review_result.caution
+            )
 
 with guide_tab:
     st.caption("검증된 수정안을 기준으로, 모집요강에서 강조하는 평가 항목과 반영 비율을 근거로 다음 학기 보완 활동을 설계합니다.")

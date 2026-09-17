@@ -39,6 +39,68 @@ COLLEGE_QUERY = """학생부종합전형 서류평가 평가영역 반영비율 
 GUIDELINE_QUERY = """학교생활기록부 작성 원칙 기재 시 주의사항 교사가 직접 관찰 평가한 내용
 활동 기록 구체적 사실 표현 금지사항"""
 
+COMMON_GUIDELINE_QUERY = """
+학교생활기록부 작성 시 유의사항
+학교생활기록부 기재 금지 사항
+학교생활기록부 서술형 항목
+교사가 직접 관찰 평가한 내용
+학생이 직접 작성한 자료 활용
+학교생활기록부 작성 원칙
+"""
+
+
+SECTION_GUIDELINE_QUERIES = {
+    "세특": """
+교과학습발달상황
+세부능력 및 특기사항
+과목별 세부능력 및 특기사항
+성취기준
+성취수준
+학습활동 참여도
+학습활동 태도
+성취과정
+성취특성
+""",
+
+    "자율자치활동": """
+창의적 체험활동상황
+자율 자치 활동
+자율자치활동
+특기사항
+학급담임교사
+구체적 활동 내용
+""",
+
+    "동아리활동": """
+창의적 체험활동상황
+동아리활동
+동아리 활동
+특기사항
+동아리 담당교사
+구체적 활동 내용
+""",
+
+    "진로활동": """
+창의적 체험활동상황
+진로활동
+진로희망분야
+진로검사
+진로상담
+관심분야
+진로희망 관련 활동내용
+진로 특성
+""",
+
+    "행특": """
+행동특성 및 종합의견
+행동특성
+종합의견
+학년 동안 지속적으로 관찰
+학생을 총체적으로 이해
+학급담임교사
+""",
+}
+
 
 def retrieve_college_context(store: Chroma, student_draft: str, university: str = "", department: str = "") -> list[Document]:
     """평가 비율과 평가요소가 서로 다른 청크에 있어도 함께 검색합니다."""
@@ -239,10 +301,103 @@ def rerank_guideline_candidates(
     return selected
 
 
-def retrieve_guideline_context(store: Chroma, student_draft: str) -> list[Document]:
-    """초안별 다중 검색 후보를 모아 관련성이 높은 5개를 반환합니다."""
-    ranked_results = []
-    for label, query, weight, terms in _guideline_queries(student_draft):
-        results = store.similarity_search(query, k=GUIDELINE_CANDIDATES_PER_QUERY)
-        ranked_results.append((label, weight, terms, results))
-    return _attach_draft_matches(rerank_guideline_candidates(ranked_results), student_draft)
+def retrieve_guideline_context(
+    store: Chroma,
+    student_draft: str,
+    record_section: str,
+) -> list[Document]:
+
+    if record_section not in SECTION_GUIDELINE_QUERIES:
+        raise ValueError(
+            f"지원하지 않는 생기부 항목입니다: "
+            f"{record_section}"
+        )
+
+    common_query = f"""
+{COMMON_GUIDELINE_QUERY}
+
+현재 검토할 초안:
+{student_draft}
+"""
+
+    section_query = f"""
+{SECTION_GUIDELINE_QUERIES[record_section]}
+
+현재 검토할 초안:
+{student_draft}
+"""
+
+    common_results = store.similarity_search(
+        common_query,
+        k=5,
+    )
+
+    section_results = store.similarity_search(
+        section_query,
+        k=6,
+    )
+
+    results = []
+    seen = {}
+
+    for scope, documents in (
+        ("공통", common_results),
+        (record_section, section_results),
+    ):
+
+        for document in documents:
+
+            key = (
+                str(
+                    document.metadata.get(
+                        "source",
+                        ""
+                    )
+                ),
+                document.metadata.get("page"),
+                document.page_content,
+            )
+
+            # 공통/항목 검색에서 같은 chunk가 나온 경우
+            if key in seen:
+
+                existing = seen[key]
+
+                scopes = existing.metadata.get(
+                    "guideline_scopes",
+                    []
+                )
+
+                existing.metadata[
+                    "guideline_scopes"
+                ] = list(
+                    dict.fromkeys(
+                        scopes + [scope]
+                    )
+                )
+
+                continue
+
+            metadata = dict(
+                document.metadata
+            )
+
+            metadata[
+                "guideline_scopes"
+            ] = [scope]
+
+            metadata[
+                "retrieval_reasons"
+            ] = [
+                f"{scope} 작성요령 검색"
+            ]
+
+            copied = Document(
+                page_content=document.page_content,
+                metadata=metadata,
+            )
+
+            seen[key] = copied
+            results.append(copied)
+
+    return results

@@ -13,6 +13,9 @@ class Evidence(BaseModel):
     content: str = Field(description="검색된 본문에서 그대로 복사한 연속된 근거 문구")
     retrieval_score: float | None = None
     retrieval_reasons: list[str] = Field(default_factory=list)
+    guideline_scopes: list[str] = Field(
+        default_factory=list
+    )
     retrieval_keywords: list[str] = Field(default_factory=list)
     retrieval_keyword_groups: dict[str, list[str]] = Field(default_factory=dict)
     draft_matches: list[str] = Field(default_factory=list)
@@ -40,51 +43,85 @@ def select_evidence(evidence_ids: list[int], documents: list[Document]) -> list[
         if not 1 <= index <= len(documents):
             raise ValueError("[근거 검증] 검색 결과에 없는 근거 번호입니다. 다시 분석하세요.")
         document = documents[index - 1]
-        evidence.append(Evidence(
-            source=Path(document.metadata["source"]).name,
-            page=document.metadata["page"],
-            content=document.page_content,
-            retrieval_score=document.metadata.get("retrieval_score"),
-            retrieval_reasons=document.metadata.get("retrieval_reasons", []),
-            retrieval_keywords=document.metadata.get("retrieval_keywords", []),
-            retrieval_keyword_groups=document.metadata.get("retrieval_keyword_groups", {}),
-            draft_matches=document.metadata.get("draft_matches", []),
-            draft_matches_by_category=document.metadata.get("draft_matches_by_category", {}),
-        ))
+        evidence.append(
+            Evidence(
+                source=Path(
+                    document.metadata["source"]
+                ).name,
+
+                page=document.metadata["page"],
+
+                content=document.page_content,
+
+                retrieval_score=document.metadata.get(
+                    "retrieval_score"
+                ),
+
+                retrieval_reasons=document.metadata.get(
+                    "retrieval_reasons",
+                    []
+                ),
+
+                guideline_scopes=document.metadata.get(
+                    "guideline_scopes",
+                    []
+                ),
+
+                retrieval_keywords=document.metadata.get(
+                    "retrieval_keywords",
+                    []
+                ),
+
+                retrieval_keyword_groups=document.metadata.get(
+                    "retrieval_keyword_groups",
+                    {}
+                ),
+
+                draft_matches=document.metadata.get(
+                    "draft_matches",
+                    []
+                ),
+
+                draft_matches_by_category=document.metadata.get(
+                    "draft_matches_by_category",
+                    {}
+                ),
+            )
+        )
     return evidence
 
 
-def looks_like_record_sentence(text: str, original: str = "") -> bool:
-    """수정안에 지시문·근거 설명·과도한 새 내용이 섞였는지 확인합니다."""
-    compact = " ".join(text.split())
-    forbidden = (
-        "작성할 것", "서술할 것", "포함할 것", "강조할 것", "입력한다",
-        "수정 이유", "평가 기준", "평가기준", "반영 비율", "모집요강",
-        "작성요령", "metadata page", ".pdf",
+def looks_like_record_sentence(
+    text: str,
+) -> bool:
+
+    compact = " ".join(
+        text.split()
     )
-    if not compact or any(marker in compact for marker in forbidden):
-        return False
-    if not original:
-        return True
 
-    original_length = len("".join(original.split()))
-    revised_length = len("".join(text.split()))
-    if revised_length > max(original_length + 25, int(original_length * 1.5)):
-        return False
+    forbidden = (
+        "작성할 것",
+        "서술할 것",
+        "포함할 것",
+        "강조할 것",
+        "입력한다",
+        "수정 이유",
+        "평가 기준",
+        "평가기준",
+        "반영 비율",
+        "모집요강",
+        "작성요령",
+        "metadata page",
+        ".pdf",
+    )
 
-    original_tokens = re.findall(r"[가-힣]{2,}|[A-Za-z]{2,}", original.lower())
-    revised_tokens = re.findall(r"[가-힣]{2,}|[A-Za-z]{2,}", text.lower())
-    unsupported = [
-        token for token in revised_tokens
-        if not any(
-            token in original_token
-            or original_token in token
-            or (len(token) >= 3 and len(original_token) >= 3 and token[:2] == original_token[:2])
-            for original_token in original_tokens
+    return (
+        bool(compact)
+        and not any(
+            marker in compact
+            for marker in forbidden
         )
-    ]
-    return len(set(unsupported)) <= 2
-
+    )
 
 def conservative_rewrite(student_draft: str) -> str:
     """수정 후보가 검증에 실패했을 때 원문 사실을 보존한 최소 정리본입니다."""
