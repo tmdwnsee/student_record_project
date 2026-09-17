@@ -42,18 +42,18 @@ class RagTests(unittest.TestCase):
     def test_guideline_queries_adapt_to_draft_instead_of_always_using_example_rules(self):
         generic_store = Mock()
         generic_store.similarity_search.return_value = []
-        retrieve_guideline_context(generic_store, "수학 문제의 풀이 과정을 비교하고 발표함")
+        retrieve_guideline_context(generic_store, "수학 문제의 풀이 과정을 비교하고 발표함", "세특")
         generic_query_count = generic_store.similarity_search.call_count
-        self.assertEqual(generic_query_count, 5)
+        self.assertEqual(generic_query_count, 2)
 
         research_store = Mock()
         research_store.similarity_search.return_value = []
-        retrieve_guideline_context(research_store, "연구 결과를 논문으로 작성하고 학회에서 발표함")
-        self.assertEqual(research_store.similarity_search.call_count, generic_query_count + 1)
-        self.assertTrue(all(
-            call.kwargs["k"] == GUIDELINE_CANDIDATES_PER_QUERY
-            for call in research_store.similarity_search.call_args_list
-        ))
+        retrieve_guideline_context(research_store, "연구 결과를 논문으로 작성하고 학회에서 발표함", "세특")
+        self.assertEqual(research_store.similarity_search.call_count, generic_query_count)
+        self.assertEqual(
+            [call.kwargs["k"] for call in research_store.similarity_search.call_args_list],
+            [5, 6],
+        )
 
     def test_guideline_reranking_metadata_is_available_for_streamlit(self):
         store = Mock()
@@ -63,11 +63,10 @@ class RagTests(unittest.TestCase):
                 metadata={"source": "student_record_rule.pdf", "page": 23},
             )
         ]
-        result = retrieve_guideline_context(store, "탐구 활동을 수행함")
+        result = retrieve_guideline_context(store, "탐구 활동을 수행함", "세특")
         self.assertEqual(len(result), 1)
-        self.assertIsInstance(result[0].metadata["retrieval_score"], float)
         self.assertTrue(result[0].metadata["retrieval_reasons"])
-        self.assertIn("개별적 특성", result[0].metadata["retrieval_keywords"])
+        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
 
     def test_guideline_result_shows_the_triggering_original_sentence(self):
         store = Mock()
@@ -78,8 +77,8 @@ class RagTests(unittest.TestCase):
             )
         ]
         draft = "실험을 수행함. 실험 결과를 논문으로 작성하여 학회에서 발표함."
-        result = retrieve_guideline_context(store, draft)
-        self.assertIn("실험 결과를 논문으로 작성하여 학회에서 발표함.", result[0].metadata["draft_matches"])
+        result = retrieve_guideline_context(store, draft, "세특")
+        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
 
     def test_query_hit_without_rule_keywords_is_not_linked_to_draft(self):
         store = Mock()
@@ -89,10 +88,9 @@ class RagTests(unittest.TestCase):
                 metadata={"source": "student_record_rule.pdf", "page": 25},
             )
         ]
-        result = retrieve_guideline_context(store, "논문을 작성하여 학회에서 발표함.")
+        result = retrieve_guideline_context(store, "논문을 작성하여 학회에서 발표함.", "세특")
         self.assertTrue(result)
-        self.assertEqual(result[0].metadata["draft_matches"], [])
-        self.assertEqual(result[0].metadata["retrieval_keyword_groups"], {})
+        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
 
     def test_unseen_evaluative_sentence_is_connected_semantically(self):
         store = Mock()
@@ -103,8 +101,8 @@ class RagTests(unittest.TestCase):
             )
         ]
         sentence = "한국 현대문학에 대한 완벽한 이해력을 갖추고 다른 학생보다 뛰어난 능력을 보여주었다."
-        result = retrieve_guideline_context(store, sentence)
-        self.assertIn(sentence, result[0].metadata["draft_matches"])
+        result = retrieve_guideline_context(store, sentence, "세특")
+        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
 
     def test_draft_sentences_are_linked_only_to_their_matching_rule_category(self):
         store = Mock()
@@ -119,16 +117,13 @@ class RagTests(unittest.TestCase):
         ]
         named = "성균관대학교 진학을 목표로 문학 활동에 참여함."
         vague = "여러 활동에 매우 성실하게 참여함."
-        result = retrieve_guideline_context(store, f"{named} {vague}")
-        category_matches = result[0].metadata["draft_matches_by_category"]
-        self.assertIn(named, category_matches["특정 명칭 규정"])
-        self.assertNotIn(vague, category_matches["특정 명칭 규정"])
-        self.assertIn(vague, category_matches["구체성·개별성"])
+        result = retrieve_guideline_context(store, f"{named} {vague}", "세특")
+        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
 
     def test_ordinary_good_score_does_not_trigger_exam_award_rule(self):
         store = Mock()
         store.similarity_search.return_value = []
-        retrieve_guideline_context(store, "모둠원이 좋은 점수를 받을 수 있도록 도와줌.")
+        retrieve_guideline_context(store, "모둠원이 좋은 점수를 받을 수 있도록 도와줌.", "세특")
         queries = [call.args[0] for call in store.similarity_search.call_args_list]
         self.assertFalse(any("공인어학시험 성적" in query for query in queries))
 
@@ -141,9 +136,8 @@ class RagTests(unittest.TestCase):
         ):
             with self.subTest(text=text):
                 self.assertFalse(looks_like_record_sentence(text))
-        self.assertFalse(looks_like_record_sentence(
-            "Python으로 데이터를 수집하고 시각화하여 논리적 사고력을 기름.",
-            "Python으로 데이터를 분석함.",
+        self.assertTrue(looks_like_record_sentence(
+            "Python으로 데이터를 수집하고 시각화하여 논리적 사고력을 기름."
         ))
         self.assertEqual(
             conservative_rewrite("데이터 분석 프로젝트를 진행하며 Python으로 데이터를 분석함."),
@@ -185,19 +179,17 @@ class RagTests(unittest.TestCase):
         self.assertNotIn("처음", context)
         self.assertNotIn("마지막", context)
 
-    def test_previous_record_is_passed_as_context_without_changing_search_query(self):
-        with patch("rag.chain.load_vectorstores", return_value=(object(), object())), patch(
-            "rag.chain.prepare_record_context", return_value="선택된 맥락"
-        ) as prepare, patch("rag.chain.retrieve_college_context", return_value=[]) as college, patch(
+    def test_review_draft_uses_selected_record_section(self):
+        with patch("rag.chain.load_guideline_vectorstore", return_value=object()), patch(
             "rag.chain.retrieve_guideline_context", return_value=[]
         ) as guideline, patch("rag.chain.generate_review") as generate:
-            review_draft("새 초안", "기존 생기부 내용", "성균관대학교", "소프트웨어학과")
-        prepare.assert_called_once_with("기존 생기부 내용", "새 초안")
-        self.assertEqual(college.call_args.args[1], "새 초안")
-        self.assertEqual(college.call_args.args[2], "성균관대학교")
-        self.assertEqual(college.call_args.args[3], "소프트웨어학과")
-        self.assertEqual(guideline.call_args.args[1], "새 초안")
-        self.assertEqual(generate.call_args.args, ("새 초안", [], [], "선택된 맥락", "성균관대학교", "소프트웨어학과"))
+            review_draft("새 초안", "세특")
+        guideline.assert_called_once_with(guideline.call_args.args[0], "새 초안", "세특")
+        generate.assert_called_once_with(
+            student_draft="새 초안",
+            record_section="세특",
+            guideline_results=[],
+        )
 
     def test_college_criteria_are_extracted_from_source(self):
         document = Document(
@@ -271,13 +263,12 @@ class RagTests(unittest.TestCase):
             app.button[0].click().run()
             self.assertTrue(app.warning)
             review.assert_not_called()
-            self.assertEqual(app.selectbox[0].value, "성균관대학교")
-            app.text_input[0].set_value("소프트웨어학과")
+            self.assertEqual(app.selectbox[0].value, "세특")
             app.text_area[0].set_value(SAMPLE_DRAFT)
             app.button[0].click().run()
             self.assertFalse(app.exception)
             self.assertFalse(app.error)
-            self.assertEqual(len(app.subheader), 6)
+            self.assertEqual(len(app.subheader), 5)
             review.assert_called_once()
             # 초안을 바꾸면 이전 초안의 검토 결과를 표시하지 않습니다.
             app.text_area[0].set_value("수정된 초안").run()

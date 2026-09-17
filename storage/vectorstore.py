@@ -53,3 +53,14 @@ def load_vectorstores():
         _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, embedding),
         _open_store(GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION, embedding),
     )
+
+
+@lru_cache(maxsize=1)
+def load_guideline_vectorstore():
+    embedding = get_embeddings()
+
+    return _open_store(
+        GUIDELINE_VECTORSTORE,
+        GUIDELINE_COLLECTION,
+        embedding,
+    )
