@@ -459,7 +459,7 @@ def build_revision_reason(
         lines.append(
             "- **수정한 표현**: "
             + "; ".join(
-                diagnosis.writing_issues[:3]
+                diagnosis.writing_issues
             )
         )
 
@@ -467,7 +467,7 @@ def build_revision_reason(
         lines.append(
             "- **삭제·제외한 내용**: "
             + "; ".join(
-                diagnosis.deletion_targets[:3]
+                diagnosis.deletion_targets
             )
         )
 
@@ -475,7 +475,7 @@ def build_revision_reason(
         lines.append(
             "- **작성요령 반영 방향**: "
             + "; ".join(
-                diagnosis.rewrite_directions[:3]
+                diagnosis.rewrite_directions
             )
         )
 
