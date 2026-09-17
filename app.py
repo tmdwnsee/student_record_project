@@ -297,49 +297,72 @@ with review_tab:
                 st.write(review_result.record_context)
 
 with guide_tab:
-    st.caption("검증된 수정안을 기준으로, 모집요강에서 강조하는 평가 항목과 반영 비율을 근거로 다음 학기 보완 활동을 설계합니다.")
+    st.caption("자기평가보고서 초안과 기존 생기부 원문을 함께 분석해, 모집요강의 평가 항목별로 실제 활동 에피소드가 드러나는 가이드를 제시합니다.")
     guide_university = st.selectbox("희망 대학교", options=list(COLLEGE_GUIDES), key="guide_university")
     guide_department = st.text_input("희망 학과", placeholder="예: 소프트웨어학과", key="guide_department")
-    guide_default_text = ""
-    review_result = st.session_state.get("review_result")
-    if review_result:
-        guide_default_text = review_result.revised_text
+    guide_section_type = st.selectbox(
+        "초안의 활동 구분",
+        options=["세부능력특기사항", "창체·동아리 활동", "자율활동", "진로·봉사활동"],
+        key="guide_section_type",
+    )
+    guide_subject = ""
+    if guide_section_type == "세부능력특기사항":
+        guide_subject = st.selectbox(
+            "반영을 희망하는 과목",
+            options=["국어", "영어", "수학", "사회", "과학"],
+            key="guide_subject",
+            help="자기평가보고서 초안이 실제로 반영되기를 바라는 세부능력특기사항 과목을 선택하세요.",
+        )
     guide_draft = st.text_area(
-        "검증 결과 반영 초안",
+        "자기평가보고서 초안",
         height=180,
-        value=guide_default_text,
-        placeholder="검증에서 나온 수정안을 붙여넣거나, 대학 맞춤 가이드를 적용할 초안을 입력하세요.",
+        placeholder="예: 태양광 발전 원리를 학습하고 관련 자료를 조사함.",
         key="guide_draft_input",
     )
+    guide_uploaded_record = st.file_uploader(
+        "기존 생기부 원문",
+        type=["pdf", "txt"],
+        help="자기평가보고서 초안과 같은 활동 구분의 원문을 찾아 평가 항목별 에피소드 예시에 반영합니다. 텍스트 PDF 또는 UTF-8 TXT, 10MB 이하.",
+        key="guide_uploaded_record",
+    )
+    guide_upload_bytes = guide_uploaded_record.getvalue() if guide_uploaded_record else b""
 
-    if st.button("수정안 기반 미래 가이드 생성", key="guide_button", type="secondary"):
-        if not guide_department.strip() or not guide_draft.strip():
-            st.warning("희망 학과와 수정안 반영 초안을 모두 입력하세요.")
+    if st.button("대학 맞춤 활동 가이드 생성", key="guide_button", type="secondary"):
+        if not guide_department.strip() or not guide_draft.strip() or not guide_uploaded_record:
+            st.warning("희망 학과, 자기평가보고서 초안, 기존 생기부 원문을 모두 입력하세요.")
         else:
             try:
-                with st.spinner("검증된 수정안을 바탕으로 대학별 평가 항목과 반영 비율에 맞는 보완 계획을 구성하고 있습니다..."):
+                previous_record = extract_context(guide_uploaded_record.name, guide_upload_bytes)
+                with st.spinner("생기부 원문에서 관련 활동을 선별하고 대학별 평가 항목에 맞는 에피소드형 가이드를 구성하고 있습니다..."):
                     guide_result = generate_future_guide(
                         guide_draft,
                         guide_university,
                         guide_department.strip(),
-                        revised_text=guide_draft,
+                        section_type=guide_section_type,
+                        previous_record=previous_record,
+                        subject=guide_subject,
                     )
 
-                st.subheader("1. 기준이 되는 수정안")
-                st.write(guide_result["original_text"])
-
-                st.subheader("2. 다음 학기 보완 활동 예시")
+                st.subheader("1. 평가 항목별 활동 가이드")
+                subject_text = f"· {guide_subject}" if guide_subject else ""
+                st.caption(f"'{guide_section_type}{subject_text}'에서 자기평가보고서 초안과 연결되는 생기부 원문을 참고해 작성했습니다.")
                 st.info(guide_result["summary"])
                 for item in guide_result["future_activities"]:
                     st.markdown(f"### {item['criterion']} ({item['weight']})")
                     st.write(item["rationale"])
-                    st.code(item["example_activity"], language="text")
+                    examples = item.get("example_activities") or [item.get("example_activity", "")]
+                    for index, example in enumerate(examples, start=1):
+                        st.markdown(f"**{index}.** {example}")
 
-                st.subheader("3. 대학 평가 항목 근거")
+                st.subheader("2. 대학 평가 항목 근거")
                 if guide_result["college_criteria"]:
                     for criterion in guide_result["college_criteria"]:
                         render_college_criterion(criterion)
                 else:
                     st.write("모집요강에서 평가 영역과 반영 비율을 확인하지 못했습니다.")
+
+                if guide_result.get("record_context"):
+                    with st.expander("가이드 작성에 참고한 생기부 원문 구간"):
+                        st.write(guide_result["record_context"])
             except Exception as error:
                 st.error(f"가이드 생성 실패: {error}")
