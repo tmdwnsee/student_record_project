@@ -66,13 +66,14 @@ def generate_review(
             model,
             student_draft,
             diagnosis,
+            guideline_results,
             college_criteria,
             previous_record,
         )
     except Exception as error:
         raise RuntimeError(
-            f"[초안 진단/수정안 생성] Ollama 응답 생성 실패 ({type(error).__name__}). "
-            f"Ollama가 실행 중인지와 {MODEL} 모델이 설치되어 있는지 확인하세요."
+            f"[초안 진단/수정안 생성 실패] "
+            f"{type(error).__name__}: {error}"
         ) from error
 
     # 재정렬된 작성요령 5개를 Streamlit 근거 영역에 모두 표시합니다.
