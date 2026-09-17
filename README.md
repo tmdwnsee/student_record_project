@@ -10,7 +10,7 @@
 
 | 경로 | 역할 |
 | --- | --- |
-| `app.py` | Streamlit 입력과 결과 화면 |
+| `app.py` | Streamlit 입력과 결과 화면 출력 |
 | `ingestion/pdf_pipeline.py` | pdftotext, PyMuPDF, OCR 순서의 PDF 추출 |
 | `ingestion/prepare_documents.py` | 추출된 PDF에 문서 유형을 지정하고 검색용 청크로 분할 |
 | `ingestion/build_index.py` | 검색 인덱스 생성 및 갱신 |
