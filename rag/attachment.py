@@ -53,7 +53,7 @@ def split_record(text: str) -> list[str]:
     ).split_text(text)
 
 
-def prepare_record_context(text: str, draft: str) -> str:
+def prepare_record_context(text: str, draft: str, max_selected_chunks: int = MAX_SELECTED_CHUNKS) -> str:
     """모든 구간을 검토한 뒤 관련 구간의 요약과 원문만 최종 검토에 전달합니다."""
     if not text.strip():
         return ""
@@ -63,6 +63,7 @@ def prepare_record_context(text: str, draft: str) -> str:
         base_url=OLLAMA_BASE_URL,
         temperature=0,
         reasoning=False,
+        num_ctx=8_192,
     ).with_structured_output(ChunkAssessment, method="json_schema")
     assessments = []
     for index, chunk in enumerate(chunks):
@@ -87,7 +88,7 @@ def prepare_record_context(text: str, draft: str) -> str:
     selected = sorted(
         (i for i, item in enumerate(assessments) if item.relevance >= 1),
         key=lambda i: (-assessments[i].relevance, i),
-    )[:MAX_SELECTED_CHUNKS]
+    )[:max_selected_chunks]
     if not selected:
         return "기존 생기부 전체를 검토했으나 새 초안과 직접 관련된 활동을 찾지 못했습니다."
     return "\n\n".join(

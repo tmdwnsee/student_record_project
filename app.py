@@ -1,427 +1,105 @@
+"""대학 맞춤 다음 학기 활동 가이드 화면."""
 import hashlib
-import re
-import html
 import streamlit as st
-
 from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
-from rag.chain import (
-    VALID_RECORD_SECTIONS,
-    generate_future_guide,
-    review_draft,
-)
-DISPLAY_MIN_GUIDELINE_SCORE = 0.28
-CATEGORY_LABELS = {
-    "특정 명칭 규정": "특정 기관·대학·상호명 규정",
-    "시험·수상·자격 규정": "시험·수상·자격 기재 규정",
-    "논문·지식재산 규정": "논문·지식재산 기재 규정",
-    "개인·가족정보 규정": "개인·가족정보 기재 규정",
-    "관찰·사실성": "관찰 가능한 사실 중심",
-    "구체성·개별성": "구체적 활동·개별성",
-}
+from rag.chain import generate_future_guide
+from rag.future import ACTIVITY_SECTIONS, next_semester
 
-RECORD_SECTIONS = [
-    "세특",
-    "자율자치활동",
-    "동아리활동",
-    "진로활동",
-    "행특",
-]
+st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
+st.markdown("""<style>
+.stMarkdown, .stAlert {line-height:1.8}
+[data-testid="stTable"] td {white-space:normal;vertical-align:top}
+[data-testid="stTable"] th {white-space:nowrap}
+</style>""", unsafe_allow_html=True)
+st.title("🎓 대학 맞춤 미래 활동 가이드")
+st.caption("자기평가보고서 초안과 기존 생기부를 바탕으로, 희망 대학의 평가 기준에 맞는 다음 학기 보완 활동을 설계합니다.")
 
-def evidence_excerpt(content: str, keywords: list[str]) -> str:
-    """검색 핵심어가 들어간 문단을 우선 표시하고 원문이 없으면 전체를 표시합니다."""
-    if not keywords:
-        return content
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", content) if part.strip()]
-    selected = [part for part in paragraphs if any(keyword in part for keyword in keywords)]
-    return "\n\n".join(selected) if selected else content
+with st.container(border=True):
+    a, b = st.columns(2)
+    with a:
+        university = st.selectbox("희망 대학교", list(COLLEGE_GUIDES), key="guide_university")
+    with b:
+        department = st.text_input("희망 학과", placeholder="예: 미디어커뮤니케이션학과", key="guide_department")
+    a, b = st.columns(2)
+    with a:
+        grade = st.selectbox("현재 학년", [1, 2, 3], format_func=lambda value: f"{value}학년", key="guide_grade")
+    with b:
+        semester = st.selectbox("현재 학기", [1, 2], format_func=lambda value: f"{value}학기", key="guide_semester")
+    section = st.selectbox("초안의 활동 구분", ACTIVITY_SECTIONS, key="guide_section_type")
+    subject = ""
+    if section == "세부능력특기사항":
+        subject = st.text_input("반영을 희망하는 과목", placeholder="예: 국어, 확률과 통계, 생명과학Ⅰ", key="guide_subject")
+    try:
+        target = next_semester(grade, semester)
+        st.caption(f"설계 대상: {target} · {section}" + (f" · {subject}" if subject else ""))
+    except ValueError as error:
+        target = ""
+        st.warning(str(error))
+    draft = st.text_area("자기평가보고서 초안", height=180, key="guide_draft_input", placeholder="현재까지 수행한 활동, 과정, 역할과 배운 점을 입력하세요.")
+    uploaded = st.file_uploader("기존 생기부 원문", type=["pdf", "txt"], key="guide_uploaded_record", help="PDF 또는 UTF-8 TXT, 최대 10MB")
+    st.caption("등록된 모집요강 지원 대학: " + ", ".join(COLLEGE_GUIDES))
 
+content = uploaded.getvalue() if uploaded else b""
+context_key = (university, department.strip(), grade, semester, section, subject.strip(), draft,
+               uploaded.name if uploaded else "", hashlib.sha256(content).hexdigest())
+requested = st.button("대학 맞춤 활동 가이드 생성", type="primary", key="guide_button", disabled=not target)
+if requested and st.session_state.get("guide_result") and st.session_state.get("guide_context_key") == context_key:
+    st.caption("같은 입력으로 생성한 가이드를 불러왔습니다.")
+elif requested:
+    st.session_state.pop("guide_result", None)
+    st.session_state.pop("guide_context_key", None)
+    if not department.strip() or not draft.strip() or not uploaded or (section == "세부능력특기사항" and not subject.strip()):
+        st.warning("희망 학과, 초안, 생기부 원문을 입력하고 세특인 경우 과목도 입력하세요.")
+    else:
+        try:
+            with st.spinner("대학 평가 기준과 관련 생기부를 확인하고 다음 학기 활동을 설계하고 있습니다..."):
+                result = generate_future_guide(draft, university, department.strip(), current_grade=grade,
+                    current_semester=semester, section_type=section, previous_record=extract_context(uploaded.name, content), subject=subject)
+            st.session_state["guide_result"] = result
+            st.session_state["guide_context_key"] = context_key
+        except Exception as error:
+            st.error(f"가이드 생성 실패: {error}")
 
-def concise_evidence_text(content: str, keywords: list[str]) -> str:
-    """글자 수로 자르지 않고 핵심어가 포함된 완결 문장만 선택합니다."""
-    excerpt = evidence_excerpt(content, keywords)
-    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", excerpt) if part.strip()]
-    sentences = []
-    for paragraph in paragraphs:
-        normalized = re.sub(r"\s+", " ", paragraph)
-        sentences.extend(part.strip() for part in re.split(r"(?<=[.!?])\s+", normalized) if part.strip())
-    relevant = [sentence for sentence in sentences if any(keyword in sentence for keyword in keywords)]
-    return "\n\n".join((relevant or sentences)[:2])
-
-
-def guideline_display_groups(evidence_items) -> list[tuple[str, list[dict]]]:
-    """원문 한 문장 아래에 표시할 관련 규정 카드를 묶습니다."""
-    grouped: dict[str, list[dict]] = {}
-    seen = set()
-    for evidence in evidence_items:
-        score = evidence.retrieval_score or 0.0
-        if score < DISPLAY_MIN_GUIDELINE_SCORE or not evidence.draft_matches:
-            continue
-        category_matches = evidence.draft_matches_by_category
-        if not category_matches:
-            continue
-        for category, expressions in category_matches.items():
-            if category not in CATEGORY_LABELS:
-                continue
-            category_keywords = evidence.retrieval_keyword_groups.get(category, [])
-            for expression in expressions:
-                summary = concise_evidence_text(evidence.content, category_keywords)
-                key = (expression, category, evidence.source, evidence.page, summary)
-                if key in seen:
-                    continue
-                seen.add(key)
-                grouped.setdefault(expression, []).append({
-                    "category": CATEGORY_LABELS[category],
-                    "reason": category,
-                    "source": evidence.source,
-                    "page": evidence.page,
-                    "excerpt": summary,
-                    "score": score,
-                })
-    return list(grouped.items())
-
-
-def render_guideline_card(items: list[dict]) -> None:
-    categories = list(dict.fromkeys(item["category"] for item in items))
-    sources = list(dict.fromkeys(
-        f"{item['source']} (metadata page {item['page']})" for item in items
-    ))
-    summaries = list(dict.fromkeys(item["excerpt"] for item in items))
-    badges = "".join(f'<span class="guideline-badge">{html.escape(category)}</span>' for category in categories)
-    summary_html = "<br><br>".join(html.escape(summary) for summary in summaries[:2])
-    st.markdown(
-        f"""
-        <div class="guideline-card">
-          <div class="guideline-badges">{badges}</div>
-          <div class="guideline-label">관련 기재요령 요약</div>
-          <div class="guideline-quote">{summary_html}</div>
-          <div class="guideline-source">출처: {html.escape(' / '.join(sources))}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def render_college_criterion(criterion) -> None:
-    """대학 평가기준을 질문·확인 항목·초안 보완 방향으로 나누어 표시합니다."""
-    subcriteria = "".join(
-        f'<span class="college-chip">{html.escape(item)}</span>'
-        for item in criterion.subcriteria
-    ) or '<span class="college-empty">확인된 하위 평가요소 없음</span>'
-    question = html.escape(criterion.evaluation_question or "모집요강에서 별도 질문을 확인하지 못했습니다.")
-    points = "".join(
-        f"<li>{html.escape(item)}</li>" for item in criterion.evaluation_points
-    ) or "<li>세부 확인 항목을 확인하지 못했습니다.</li>"
-    evidence = "".join(
-        f"<li>{html.escape(item)}</li>" for item in criterion.draft_evidence
-    ) or "<li>현재 초안에서 직접 확인되는 관련 내용이 충분하지 않습니다.</li>"
-    missing = "".join(
-        f"<li>{html.escape(item)}</li>" for item in criterion.missing_aspects
-    ) or "<li>현재 기준에서 별도로 표시할 부족 항목이 없습니다.</li>"
-    direction = html.escape(criterion.revision_direction or "실제 활동 과정과 결과")
-    st.markdown(
-        f"""
-        <div class="college-card">
-          <div class="college-card-header">
-            <span class="college-area">{html.escape(criterion.area)}</span>
-            <span class="college-weight">{html.escape(criterion.weight)}</span>
-          </div>
-          <div class="college-section-label">하위 평가요소</div>
-          <div class="college-chips">{subcriteria}</div>
-          <div class="college-focus">
-            <div class="college-section-label">대학의 핵심 평가 질문</div>
-            <div class="college-question">{question}</div>
-            <div class="college-section-label">중점 확인 항목</div>
-            <ul>{points}</ul>
-          </div>
-          <div class="college-diagnosis-grid">
-            <div class="college-diagnosis shown">
-              <div class="college-section-label">초안에서 드러난 점</div>
-              <ul>{evidence}</ul>
-            </div>
-            <div class="college-diagnosis missing">
-              <div class="college-section-label">보완할 점</div>
-              <ul>{missing}</ul>
-            </div>
-          </div>
-          <div class="college-direction"><strong>강조할 방향</strong><br>{direction}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-st.set_page_config(
-    page_title="자기평가보고서 초안 검토",
-    page_icon="📝",
-)
-
-st.markdown("""
-<style>
-    .stMarkdown, .stAlert { line-height: 1.75; }
-    [data-testid="stTable"] td { white-space: normal; vertical-align: top; }
-    [data-testid="stTable"] th { white-space: nowrap; }
-    .expression-title { color: #5f6b7a; font-weight: 700; margin: 1.4rem 0 .55rem; }
-    .expression-box { background: #ffe2e2; color: #ef4444; font-size: 1.08rem;
-        font-weight: 700; padding: 1rem 1.1rem; border-radius: .75rem; margin-bottom: .9rem; }
-    .guideline-card { background: #f6f7f9; padding: 1.15rem; border-radius: .8rem; margin: .75rem 0 1rem; }
-    .guideline-badges { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .75rem; }
-    .guideline-badge { display: inline-block; color: white; background: #e8790c; font-weight: 700;
-        padding: .4rem .62rem; border-radius: .45rem; font-size: .9rem; }
-    .guideline-label { color: #526071; font-weight: 700; margin: .7rem 0 .3rem; }
-    .guideline-text { color: #313843; line-height: 1.7; }
-    .guideline-quote { background: #e8f0ff; border-left: 4px solid #3b82f6; padding: .85rem 1rem;
-        border-radius: .45rem; color: #303846; line-height: 1.75; white-space: pre-wrap; }
-    .guideline-source { color: #718096; font-size: .86rem; margin-top: .7rem; }
-    .college-card { border: 1px solid #dfe5ec; border-radius: .9rem; padding: 1.2rem;
-        margin: .8rem 0 1rem; background: white; }
-    .college-card-header { display: flex; align-items: center; gap: .55rem; margin-bottom: .9rem; }
-    .college-area { color: #1f2937; font-size: 1.15rem; font-weight: 800; }
-    .college-weight { background: #e8f0ff; color: #2563eb; font-weight: 800;
-        padding: .25rem .55rem; border-radius: 999px; }
-    .college-section-label { color: #526071; font-weight: 750; margin: .55rem 0 .3rem; }
-    .college-chips { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .8rem; }
-    .college-chip { background: #e7f7f2; color: #087f5b; font-weight: 700;
-        padding: .3rem .55rem; border-radius: .45rem; }
-    .college-empty { color: #718096; }
-    .college-focus { background: #f7f9fc; border-radius: .65rem; padding: .75rem 1rem; }
-    .college-question { color: #263244; font-weight: 650; margin-bottom: .45rem; }
-    .college-focus ul, .college-diagnosis ul { margin: .25rem 0 .1rem; padding-left: 1.25rem; }
-    .college-diagnosis-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: .7rem; margin-top: .8rem; }
-    .college-diagnosis { border-radius: .65rem; padding: .7rem .9rem; }
-    .college-diagnosis.shown { background: #effaf5; }
-    .college-diagnosis.missing { background: #fff7ed; }
-    .college-direction { margin-top: .8rem; padding: .75rem .9rem; background: #eef4ff;
-        border-left: 4px solid #3b82f6; border-radius: .45rem; line-height: 1.7; }
-    @media (max-width: 720px) { .college-diagnosis-grid { grid-template-columns: 1fr; } }
-</style>
-""", unsafe_allow_html=True)
-
-st.title(
-    "📝 생기부 작성요령 검증 및 대학 맞춤 미래 활동 설계"
-)
-
-st.caption(
-    "기능 1: 자기평가보고서 초안이 작성요령에 어긋나지 않는지 검증하고, 수정 방향과 근거를 제시합니다.\n"
-    "기능 2: 희망 대학의 평가 항목과 반영 비율을 바탕으로, 다음 학기 보완 활동을 구체적으로 설계합니다."
-)
-
-review_tab, guide_tab = st.tabs([
-    "1. 작성요령 검증",
-    "2. 대학 맞춤 미래 가이드",
-])
-
-with review_tab:
-    st.caption(
-        "학생이 작성한 초안을 교육부 학교생활기록부 작성요령에 따라 "
-        "검토하고 수정안을 생성합니다."
-    )
-
-    review_section = st.selectbox(
-        "초안을 입력할 생기부 항목",
-        options=RECORD_SECTIONS,
-        key="review_record_section",
-    )
-
-    review_text = st.text_area(
-        "자기평가보고서 초안",
-        height=180,
-        placeholder="교사에게 전달할 생기부 기재 희망 내용을 입력하세요.",
-        key="review_draft_input",
-    )
-
-    review_context_key = (
-        review_section,
-        review_text,
-    )
-
-    if st.button(
-        "작성요령 검증 및 수정안 생성",
-        key="review_button",
-        type="primary",
-    ):
-        st.session_state.pop(
-            "review_result",
-            None,
-        )
-
-        st.session_state.pop(
-            "review_context_key",
-            None,
-        )
-
-        if not review_text.strip():
-            st.warning(
-                "자기평가보고서 초안을 입력하세요."
-            )
-
-        else:
-            try:
-                with st.spinner(
-                    f"공통 작성요령과 {review_section} 작성요령을 "
-                    "검색해 초안을 수정하고 있습니다..."
-                ):
-                    result = review_draft(
-                        student_draft=review_text,
-                        record_section=review_section,
-                    )
-
-                st.session_state["review_result"] = result
-                st.session_state[
-                    "review_context_key"
-                ] = review_context_key
-
-            except Exception as error:
-                st.error(
-                    f"검증 실패: {error}"
-                )
-
-    review_result = st.session_state.get(
-        "review_result"
-    )
-
-    if (
-        review_result
-        and st.session_state.get(
-            "review_context_key"
-        )
-        == review_context_key
-    ):
-        st.divider()
-
-        st.subheader("1. 입력 원문")
-
+result = st.session_state.get("guide_result")
+if result and st.session_state.get("guide_context_key") == context_key:
+    st.divider()
+    st.subheader("1. 활동 가이드")
+    st.info(result["summary"])
+    st.caption("반영 비율이 큰 평가항목부터 표시합니다. 반영 비율은 합격 확률이나 활동 시간 배분을 뜻하지 않습니다.")
+    for item in result["future_activities"]:
         with st.container(border=True):
-            st.write(
-                review_result.original_text
-            )
+            st.markdown(f"### {item['criterion']} · {item['weight']}")
+            st.markdown(f"**{item['title']}**")
+            st.write(item["rationale"])
+            a, b = st.columns(2)
+            with a:
+                st.markdown("**다음 학기 보완 목표**")
+                st.write(item["goal"])
+            with b:
+                st.markdown("**희망 학과와 연결하는 방향**")
+                st.write(item["department_connection"])
+            st.table([{"시기": period, "구체적인 실행 방법": step["action"], "결과물·기록": step["output"]}
+                      for period, step in zip(["학기 초 · 준비", "학기 중 · 실행", "학기 말 · 정리·성찰"], item["steps"])])
+            st.markdown("**완료·성장 확인 기준**")
+            st.write(item["success_check"])
 
-        st.subheader("2. 수정안")
-
+    st.subheader("2. 근거")
+    st.markdown("#### 대학 평가 항목과 반영 비율")
+    for criterion in result["college_criteria"]:
         with st.container(border=True):
-            st.markdown(
-                f"**{review_result.revised_text}**"
-            )
-
-        st.subheader("3. 수정·삭제 이유")
-
-        with st.container(border=True):
-            st.markdown(
-                review_result.revision_reason
-            )
-
-        st.subheader(
-            "4. 학교생활기록부 작성요령 근거"
-        )
-
-        common_evidence = [
-            item
-            for item in review_result.guideline_evidence
-            if "공통" in item.guideline_scopes
-        ]
-
-        section_evidence = [
-            item
-            for item in review_result.guideline_evidence
-            if review_result.record_section
-            in item.guideline_scopes
-        ]
-
-        st.markdown("#### 공통 작성요령")
-
-        for evidence in common_evidence:
-            with st.expander(
-                f"{evidence.source} "
-                f"· metadata page {evidence.page}"
-            ):
-                st.write(evidence.content)
-
-        st.markdown(
-            f"#### {review_result.record_section} 작성요령"
-        )
-
-        for evidence in section_evidence:
-            with st.expander(
-                f"{evidence.source} "
-                f"· metadata page {evidence.page}"
-            ):
-                st.write(evidence.content)
-
-        st.subheader("5. 추가 확인사항")
-
-        if review_result.caution:
-            st.warning(
-                review_result.caution
-            )
-
-with guide_tab:
-    st.caption("자기평가보고서 초안과 기존 생기부 원문을 함께 분석해, 모집요강의 평가 항목별로 실제 활동 에피소드가 드러나는 가이드를 제시합니다.")
-    guide_university = st.selectbox("희망 대학교", options=list(COLLEGE_GUIDES), key="guide_university")
-    guide_department = st.text_input("희망 학과", placeholder="예: 소프트웨어학과", key="guide_department")
-    guide_section_type = st.selectbox(
-        "초안의 활동 구분",
-        options=["세부능력특기사항", "창체·동아리 활동", "자율활동", "진로·봉사활동"],
-        key="guide_section_type",
-    )
-    guide_subject = ""
-    if guide_section_type == "세부능력특기사항":
-        guide_subject = st.selectbox(
-            "반영을 희망하는 과목",
-            options=["국어", "영어", "수학", "사회", "과학"],
-            key="guide_subject",
-            help="자기평가보고서 초안이 실제로 반영되기를 바라는 세부능력특기사항 과목을 선택하세요.",
-        )
-    guide_draft = st.text_area(
-        "자기평가보고서 초안",
-        height=180,
-        placeholder="예: 태양광 발전 원리를 학습하고 관련 자료를 조사함.",
-        key="guide_draft_input",
-    )
-    guide_uploaded_record = st.file_uploader(
-        "기존 생기부 원문",
-        type=["pdf", "txt"],
-        help="자기평가보고서 초안과 같은 활동 구분의 원문을 찾아 평가 항목별 에피소드 예시에 반영합니다. 텍스트 PDF 또는 UTF-8 TXT, 10MB 이하.",
-        key="guide_uploaded_record",
-    )
-    guide_upload_bytes = guide_uploaded_record.getvalue() if guide_uploaded_record else b""
-
-    if st.button("대학 맞춤 활동 가이드 생성", key="guide_button", type="secondary"):
-        if not guide_department.strip() or not guide_draft.strip() or not guide_uploaded_record:
-            st.warning("희망 학과, 자기평가보고서 초안, 기존 생기부 원문을 모두 입력하세요.")
-        else:
-            try:
-                previous_record = extract_context(guide_uploaded_record.name, guide_upload_bytes)
-                with st.spinner("생기부 원문에서 관련 활동을 선별하고 대학별 평가 항목에 맞는 에피소드형 가이드를 구성하고 있습니다..."):
-                    guide_result = generate_future_guide(
-                        guide_draft,
-                        guide_university,
-                        guide_department.strip(),
-                        section_type=guide_section_type,
-                        previous_record=previous_record,
-                        subject=guide_subject,
-                    )
-
-                st.subheader("1. 평가 항목별 활동 가이드")
-                subject_text = f"· {guide_subject}" if guide_subject else ""
-                st.caption(f"'{guide_section_type}{subject_text}'에서 자기평가보고서 초안과 연결되는 생기부 원문을 참고해 작성했습니다.")
-                st.info(guide_result["summary"])
-                for item in guide_result["future_activities"]:
-                    st.markdown(f"### {item['criterion']} ({item['weight']})")
-                    st.write(item["rationale"])
-                    examples = item.get("example_activities") or [item.get("example_activity", "")]
-                    for index, example in enumerate(examples, start=1):
-                        st.markdown(f"**{index}.** {example}")
-
-                st.subheader("2. 대학 평가 항목 근거")
-                if guide_result["college_criteria"]:
-                    for criterion in guide_result["college_criteria"]:
-                        render_college_criterion(criterion)
-                else:
-                    st.write("모집요강에서 평가 영역과 반영 비율을 확인하지 못했습니다.")
-
-                if guide_result.get("record_context"):
-                    with st.expander("가이드 작성에 참고한 생기부 원문 구간"):
-                        st.write(guide_result["record_context"])
-            except Exception as error:
-                st.error(f"가이드 생성 실패: {error}")
+            st.markdown(f"**{criterion.area} · {criterion.weight}**")
+            if criterion.subcriteria:
+                st.write("평가요소: " + " · ".join(criterion.subcriteria))
+            if criterion.evaluation_question:
+                st.write(criterion.evaluation_question)
+            for point in criterion.evaluation_points:
+                st.write(f"• {point}")
+    for evidence in result["college_evidence"]:
+        page = f"PDF {evidence.page + 1}쪽" if evidence.page is not None else "페이지 미확인"
+        with st.expander(f"모집요강 원문 · {evidence.source} · {page}"):
+            st.write(evidence.content)
+    st.markdown("#### 활동 연결에 참고한 기존 생기부")
+    with st.expander("관련 생기부 구간 보기"):
+        st.write(result["record_context"])
+    st.caption("대학 기준은 등록된 모집요강에서 확인한 내용이며, 학과 연결과 미래 활동은 AI의 제안입니다. 적용 학년도와 전형은 원문을 확인하세요.")

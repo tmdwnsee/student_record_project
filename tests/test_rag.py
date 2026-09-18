@@ -252,28 +252,6 @@ class RagTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 validate_evidence([valid.model_copy(update=changes)], [document])
 
-    def test_streamlit_empty_input_and_result(self):
-        result = ReviewResult(
-            original_text=SAMPLE_DRAFT, revised_text="데이터 분석 프로젝트에서 Python으로 데이터를 분석하였다.",
-            revision_reason="검토 이유", guideline_evidence=[], college_evidence=[], caution="확인 필요",
-        )
-        with patch("rag.chain.review_draft", return_value=result) as review:
-            app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run()
-            self.assertFalse(app.exception)
-            app.button[0].click().run()
-            self.assertTrue(app.warning)
-            review.assert_not_called()
-            self.assertEqual(app.selectbox[0].value, "세특")
-            app.text_area[0].set_value(SAMPLE_DRAFT)
-            app.button[0].click().run()
-            self.assertFalse(app.exception)
-            self.assertFalse(app.error)
-            self.assertEqual(len(app.subheader), 5)
-            review.assert_called_once()
-            # 초안을 바꾸면 이전 초안의 검토 결과를 표시하지 않습니다.
-            app.text_area[0].set_value("수정된 초안").run()
-            self.assertEqual(len(app.subheader), 0)
-
     def test_evidence_selection_rejects_invalid_ids(self):
         document = Document(page_content="평가표 원문", metadata={"source": "college_table.pdf", "page": 71})
         evidence = select_evidence([1, 1], [document])

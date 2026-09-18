@@ -47,6 +47,11 @@ def _open_store(directory, collection, embedding):
 
 
 @lru_cache(maxsize=1)
+def load_college_vectorstore():
+    return _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, get_embeddings())
+
+
+@lru_cache(maxsize=1)
 def load_vectorstores():
     embedding = get_embeddings()
     return (
