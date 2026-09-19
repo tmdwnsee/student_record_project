@@ -1,4 +1,4 @@
-# Python 3.12 / 두 PDF 기반 RAG 테스트
+# Python 3.12 / 대학 모집요강 기반 RAG
 
 # LangChain
 langchain-text-splitters==1.1.2

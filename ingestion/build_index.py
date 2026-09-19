@@ -12,11 +12,8 @@ from langchain_core.documents import Document
 from config import (
     EMBEDDING_MODEL,
     COLLEGE_PDF,
-    GUIDELINE_PDF,
     COLLEGE_VECTORSTORE,
-    GUIDELINE_VECTORSTORE,
     COLLEGE_COLLECTION,
-    GUIDELINE_COLLECTION,
 )
 
 from ingestion.prepare_documents import (
@@ -149,9 +146,11 @@ def main():
 
     print("Vector Store 갱신 시작")
 
+    # 현재 앱은 대학 맞춤 활동 가이드만 제공하므로 모집요강 인덱스만 만듭니다.
+    # 작성요령 검증 기능에서 사용하던 GUIDELINE_* 설정은 이전 데이터와의
+    # 호환성을 위해 남겨 두되, 기본 인덱싱 경로에서는 제외합니다.
     sources = (
         (COLLEGE_PDF, COLLEGE_VECTORSTORE, COLLEGE_COLLECTION),
-        (GUIDELINE_PDF, GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION),
     )
     for pdf_path, persist_directory, collection_name in sources:
         build_index(pdf_path, persist_directory, collection_name, embedding)

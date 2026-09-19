@@ -1,16 +1,29 @@
 """대학 맞춤 다음 학기 활동 가이드 화면."""
 import hashlib
+import html
 import streamlit as st
 from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
-from rag.chain import generate_future_guide
-from rag.future import ACTIVITY_SECTIONS, next_semester
+from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
+
+GUIDE_PIPELINE_VERSION = "record-experience-titles-v7"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
 .stMarkdown, .stAlert {line-height:1.8}
 [data-testid="stTable"] td {white-space:normal;vertical-align:top}
 [data-testid="stTable"] th {white-space:nowrap}
+.record-item {padding:1.1rem 0 1.8rem;margin-bottom:.7rem;border-bottom:1px solid rgba(128,128,128,.22)}
+.record-item:last-child {border-bottom:0;margin-bottom:0}
+.record-heading {display:flex;align-items:center;gap:.7rem;margin-bottom:1.5rem;font-size:1.25rem;font-weight:700}
+.record-number {display:inline-flex;align-items:center;justify-content:center;min-width:2rem;height:2rem;padding:0 .45rem;border-radius:999px;background:#e8eef8;color:#34527a;font-size:.82rem;font-weight:700}
+.record-group {margin:0 0 1.45rem 2.7rem}
+.record-group:last-child {margin-bottom:0}
+.record-label {display:flex;align-items:center;gap:.55rem;margin-bottom:.55rem;font-size:.92rem;font-weight:700}
+.record-dot {width:.5rem;height:.5rem;border-radius:999px;background:#5578a8;flex:none}
+.record-dot.reason {background:#5f8a72}
+.record-body {margin:0;line-height:1.9;font-size:1rem;word-break:keep-all;overflow-wrap:anywhere}
+.record-note {margin:.5rem 0 0;color:#6b7280;font-size:.82rem;line-height:1.6}
 </style>""", unsafe_allow_html=True)
 st.title("🎓 대학 맞춤 미래 활동 가이드")
 st.caption("자기평가보고서 초안과 기존 생기부를 바탕으로, 희망 대학의 평가 기준에 맞는 다음 학기 보완 활동을 설계합니다.")
@@ -41,7 +54,7 @@ with st.container(border=True):
     st.caption("등록된 모집요강 지원 대학: " + ", ".join(COLLEGE_GUIDES))
 
 content = uploaded.getvalue() if uploaded else b""
-context_key = (university, department.strip(), grade, semester, section, subject.strip(), draft,
+context_key = (GUIDE_PIPELINE_VERSION, university, department.strip(), grade, semester, section, subject.strip(), draft,
                uploaded.name if uploaded else "", hashlib.sha256(content).hexdigest())
 requested = st.button("대학 맞춤 활동 가이드 생성", type="primary", key="guide_button", disabled=not target)
 if requested and st.session_state.get("guide_result") and st.session_state.get("guide_context_key") == context_key:
@@ -99,7 +112,39 @@ if result and st.session_state.get("guide_context_key") == context_key:
         page = f"PDF {evidence.page + 1}쪽" if evidence.page is not None else "페이지 미확인"
         with st.expander(f"모집요강 원문 · {evidence.source} · {page}"):
             st.write(evidence.content)
-    st.markdown("#### 활동 연결에 참고한 기존 생기부")
-    with st.expander("관련 생기부 구간 보기"):
-        st.write(result["record_context"])
+    st.markdown("3. 참고한 기존 생기부 경험")
+    with st.expander("참고한 경험과 선정 이유 보기"):
+        if result.get("record_matches"):
+            st.caption("학생이 이미 수행한 주제·탐구 방법·역할 중 다음 학기 활동으로 이어 갈 수 있는 경험을 선별했습니다.")
+            for index, match in enumerate(result["record_matches"], 1):
+                display_original = " ".join(match["original"].split())
+                experience_title = match.get("experience_title", "").strip()
+                if not experience_title:
+                    experience_title = display_original[:40] + ("…" if len(display_original) > 40 else "")
+                repair_note = (
+                    '<div class="record-note">PDF 표에서 본문 사이에 끼어든 과목명을 제거해 문장을 복원했습니다.</div>'
+                    if match.get("text_was_repaired") else ""
+                )
+                st.markdown(
+                    f"""
+                    <section class="record-item">
+                      <div class="record-heading">
+                        <span class="record-number">{index:02d}</span>
+                        <span>{html.escape(experience_title)}</span>
+                      </div>
+                      <div class="record-group">
+                        <div class="record-label"><span class="record-dot"></span>기존 생기부 원문</div>
+                        <p class="record-body">{html.escape(display_original)}</p>
+                        {repair_note}
+                      </div>
+                      <div class="record-group">
+                        <div class="record-label"><span class="record-dot reason"></span>이 경험을 관련 있다고 판단한 이유</div>
+                        <p class="record-body">{html.escape(match["connection_reason"])}</p>
+                      </div>
+                    </section>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.write(result["record_context"])
     st.caption("대학 기준은 등록된 모집요강에서 확인한 내용이며, 학과 연결과 미래 활동은 AI의 제안입니다. 적용 학년도와 전형은 원문을 확인하세요.")

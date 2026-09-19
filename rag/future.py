@@ -54,7 +54,7 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
     subject = subject.strip() if section_type == "세부능력특기사항" else ""
     if section_type == "세부능력특기사항" and not subject:
         raise ValueError("반영을 희망하는 과목을 입력하세요.")
-    query = f"{section_type} {subject} {student_draft}"
+    query = f"{section_type} {subject} {department.strip()} {student_draft}"
     documents = retrieve_college_context(load_college_vectorstore(), query, university, department)
     criteria, ids = extract_college_criteria(documents, student_draft, university)
     if not criteria:
@@ -62,7 +62,13 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
     if len({c.area for c in criteria}) != len(criteria):
         raise ValueError("같은 평가 항목에 서로 다른 반영 비율이 검색됐습니다. 적용 전형을 확인하세요.")
     criteria.sort(key=lambda c: -float(c.weight.rstrip("%")))
-    record_context = prepare_record_context(previous_record, query, max_selected_chunks=1)
+    record_context, record_matches = prepare_record_context(
+        previous_record,
+        query,
+        max_selected_chunks=3,
+        return_matches=True,
+        layout_noise_terms=[subject] if subject else [],
+    )
     schema = create_model("FutureGuide", **{
         f"activity_{i}": (FutureActivity, Field(description=f"{c.area} ({c.weight}) 보완 활동"))
         for i, c in enumerate(criteria)
@@ -75,6 +81,8 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
          "입력한 활동 구분을 모든 평가항목의 계획에 반드시 적용한다. "
          "기존 활동을 다시 쓰는 문장이 아니라 앞으로 할 새로운 보완 활동을 제안한다. "
          "과거 사실은 초안과 제공된 생기부에서만 사용하고, 신규 역할·수치·결과물은 미래 목표로만 표현한다. "
+         "각 계획은 기존 생기부에서 확인된 주제·탐구 방법·역할 중 하나를 출발점으로 삼고, 추천 이유에서 어떤 기존 경험을 참고했는지 설명한다. "
+         "기존 생기부에서 직접 연결되는 활동을 찾지 못했다면 찾았다고 꾸미지 말고, 초안에서 확인되는 경험을 출발점으로 썼다고 명시한다. "
          "학교와 교내 동료·공개 자료로 수행할 수 있는 범위로 계획한다. "
          "희망 학과와의 연결은 제안이며 대학이 공식 요구하는 활동이라고 주장하지 않는다. "
          "모든 필드는 간결하게 쓰되 각 단계의 대상·방법·결과물을 구체적으로 적는다. "
@@ -84,7 +92,7 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
          f"활동 구분: {section_type}\n반영 희망 과목: {subject or '해당 없음'}\n"
          f"[대학 평가 기준]\n{official}\n[자기평가보고서 초안]\n{student_draft}\n"
          f"[기존 생기부 관련 구간]\n{record_context}\n"
-         "평가영역마다 다른 초점의 활동 하나를 계획하고, 모든 활동을 선택한 활동 구분과 다음 학기에 맞춰라."),
+         "평가영역마다 다른 초점의 활동 하나를 계획하고, 모든 활동을 선택한 활동 구분과 다음 학기에 맞춰라. 기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라."),
     ])
     if not isinstance(generated, schema):
         raise ValueError("활동 계획을 생성하지 못했습니다. 다시 실행해 주세요.")
@@ -94,5 +102,5 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
         "summary": f"{target} {section_type}{f' · {subject}' if subject else ''} 보완 계획입니다. 아직 수행하지 않은 미래 활동 제안입니다.",
         "future_activities": [{"criterion": c.area, "weight": c.weight, **getattr(generated, f"activity_{i}").model_dump()} for i, c in enumerate(criteria)],
         "college_criteria": criteria, "college_evidence": select_evidence(ids, documents),
-        "record_context": record_context,
+        "record_context": record_context, "record_matches": record_matches,
     }

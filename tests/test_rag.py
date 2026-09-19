@@ -11,7 +11,16 @@ from langchain_core.embeddings import Embeddings
 from streamlit.testing.v1 import AppTest
 
 from config import PROJECT_ROOT
-from rag.attachment import ChunkAssessment, extract_context, prepare_record_context, split_record
+from rag.attachment import (
+    CandidateVerdict,
+    RecordSelection,
+    _repair_layout_intrusions,
+    _retrieve_record_candidates,
+    extract_context,
+    prepare_record_context,
+    split_record,
+    split_record_units,
+)
 from rag.chain import SAMPLE_DRAFT, review_draft
 from rag.criteria import extract_college_criteria
 from rag.retriever import GUIDELINE_CANDIDATES_PER_QUERY, retrieve_guideline_context
@@ -36,6 +45,22 @@ class CountingEmbeddings(Embeddings):
 
     def embed_query(self, text):
         return [float(len(text)), 1.0, 0.5]
+
+
+class RecordEmbeddings:
+    @staticmethod
+    def _vector(text):
+        return [
+            float("데이터" in text),
+            float("공공" in text or "자료" in text),
+            float("봉사" in text or "수상" in text),
+        ]
+
+    def embed_documents(self, texts):
+        return [self._vector(text) for text in texts]
+
+    def embed_query(self, text):
+        return self._vector(text)
 
 
 class RagTests(unittest.TestCase):
@@ -163,21 +188,98 @@ class RagTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertIn("끝부분 활동", chunks[-1])
 
-        assessments = [
-            ChunkAssessment(activity_summary="관계없는 내용", relevance=0),
-            ChunkAssessment(activity_summary="관련 활동", relevance=3),
-            ChunkAssessment(activity_summary="다른 활동", relevance=0),
+    def test_record_context_uses_embedding_search_and_llm_validation(self):
+        record = (
+            "관련 없는 수상 내용. 데이터 분석 프로젝트를 시작함. "
+            "공공 자료 두 종류를 비교함. 분석의 한계를 기록함. 관련 없는 봉사 내용."
+        )
+        query = "데이터 분석 공공 자료 비교"
+        self.assertEqual(len(split_record_units(record)), 5)
+        with patch("rag.attachment.get_embeddings", return_value=RecordEmbeddings()):
+            candidates = _retrieve_record_candidates(record, query)
+        self.assertTrue(candidates)
+        self.assertGreater(candidates[0]["similarity_score"], 0)
+        selected_numbers = [
+            index for index, candidate in enumerate(candidates, 1)
+            if "데이터 분석" in candidate["original"] or "공공 자료" in candidate["original"]
         ]
-        with patch("rag.attachment.split_record", return_value=["처음", "중간 원문", "마지막"]), patch(
+        selection = RecordSelection(verdicts=[
+            CandidateVerdict(
+                candidate_number=number,
+                relevance=3,
+                text_integrity=2,
+                connection_reason="원문의 자료 비교 경험이 초안의 데이터 분석 방법과 관련됨",
+            )
+            for number in selected_numbers
+        ])
+        with patch("rag.attachment.get_embeddings", return_value=RecordEmbeddings()), patch(
             "rag.attachment.ChatOllama"
         ) as model_class:
             model = model_class.return_value.with_structured_output.return_value
-            model.invoke.side_effect = assessments
-            context = prepare_record_context("전체 생기부", "새 초안")
-        self.assertEqual(model.invoke.call_count, 3)
-        self.assertIn("중간 원문", context)
-        self.assertNotIn("처음", context)
-        self.assertNotIn("마지막", context)
+            model.invoke.return_value = selection
+            context, matches = prepare_record_context(record, query, return_matches=True)
+        self.assertEqual(model.invoke.call_count, 1)
+        self.assertTrue(matches)
+        self.assertIn("데이터 분석 프로젝트를 시작함.", context)
+        self.assertIn("공공 자료 두 종류를 비교함.", context)
+        self.assertNotIn("관련 없는 수상 내용", context)
+        self.assertNotIn("관련 없는 봉사 내용", context)
+        for match in matches:
+            self.assertIn(match["original"], record)
+            self.assertIn("similarity_score", match)
+            self.assertNotIn("hit_score", match)
+            self.assertNotIn("mmr_score", match)
+
+    def test_pdf_line_wrap_does_not_cut_a_record_sentence(self):
+        record = "데이터 분석 과정에서\n두 자료를 비교하여 결론을 도출함. 다음 활동을 계획함."
+        units = split_record_units(record)
+        self.assertEqual(len(units), 2)
+        self.assertEqual(units[0], "데이터 분석 과정에서\n두 자료를 비교하여 결론을 도출함.")
+
+    def test_record_context_rejects_weak_llm_match(self):
+        selection = RecordSelection(verdicts=[
+            CandidateVerdict(
+                candidate_number=1,
+                relevance=1,
+                text_integrity=2,
+                connection_reason="주제 이름만 비슷하고 직접 관련되는 경험은 없음",
+            )
+        ])
+        with patch("rag.attachment.get_embeddings", return_value=RecordEmbeddings()), patch(
+            "rag.attachment.ChatOllama"
+        ) as model_class:
+            model_class.return_value.with_structured_output.return_value.invoke.return_value = selection
+            context, matches = prepare_record_context(
+                "데이터 분석과 무관한 자료 조사 활동을 수행함.",
+                "데이터 분석 활동",
+                return_matches=True,
+            )
+        self.assertFalse(matches)
+        self.assertIn("관련성과 원문 무결성 검증을 모두 통과한 활동을 찾지 못했습니다", context)
+
+    def test_record_context_rejects_layout_corrupted_text(self):
+        broken = "자료를 선별한 뒤 데이터 저널리즘의 장 미디어 콘텐츠 기초 면 구성을 설계함."
+        selection = RecordSelection(verdicts=[
+            CandidateVerdict(
+                candidate_number=1,
+                relevance=3,
+                text_integrity=2,
+                connection_reason="데이터 저널리즘 주제가 초안과 관련됨",
+            )
+        ])
+        with patch("rag.attachment.get_embeddings", return_value=RecordEmbeddings()), patch(
+            "rag.attachment.ChatOllama"
+        ) as model_class:
+            model_class.return_value.with_structured_output.return_value.invoke.return_value = selection
+            context, matches = prepare_record_context(broken, "데이터 저널리즘", return_matches=True)
+        self.assertFalse(matches)
+        self.assertNotIn(broken, context)
+
+    def test_course_name_inserted_by_pdf_table_is_removed_and_word_is_restored(self):
+        broken = "데이터 저널리즘의 장 미디어 콘텐츠 기초 면 구성을 설계함."
+        repaired, changed = _repair_layout_intrusions(broken, ["미디어 콘텐츠 기초"])
+        self.assertTrue(changed)
+        self.assertEqual(repaired, "데이터 저널리즘의 장면 구성을 설계함.")
 
     def test_review_draft_uses_selected_record_section(self):
         with patch("rag.chain.load_guideline_vectorstore", return_value=object()), patch(
