@@ -88,13 +88,6 @@ class FutureTests(unittest.TestCase):
         self.assertTrue(context.call_args.kwargs["return_matches"])
         self.assertEqual(context.call_args.kwargs["layout_noise_terms"], ["확률과 통계"])
 
-    def test_volunteering_ignores_stale_subject(self):
-        result, model, _ = self.build_result("봉사활동", "생명과학")
-        prompt = str(model.invoke.call_args.args[0])
-        self.assertNotIn("생명과학", prompt)
-        self.assertIn("도움이 필요한 대상", prompt)
-        self.assertEqual(result["subject"], "")
-
     def test_ui_inputs_results_and_invalidation(self):
         result, _, _ = self.build_result()
         uploaded = SimpleNamespace(name="record.txt", getvalue=lambda: "기록".encode())
@@ -130,7 +123,8 @@ class FutureTests(unittest.TestCase):
                 self.assertEqual(generate.call_args.kwargs["current_grade"], 2)
                 app.button[0].click().run()
                 self.assertEqual(generate.call_count, 1)
-                app.selectbox(key="guide_section_type").set_value("봉사활동").run()
+                self.assertNotIn("봉사활동", app.selectbox(key="guide_section_type").options)
+                app.selectbox(key="guide_section_type").set_value("동아리활동").run()
                 self.assertFalse(app.subheader)
                 self.assertNotIn("guide_subject", [x.key for x in app.text_input])
                 self.assertEqual(app.selectbox(key="guide_grade").options, ["1학년", "2학년"])

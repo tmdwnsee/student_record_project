@@ -8,13 +8,12 @@ from rag.criteria import extract_college_criteria
 from rag.retriever import retrieve_college_context
 from storage.vectorstore import load_college_vectorstore
 
-ACTIVITY_SECTIONS = ["세부능력특기사항", "동아리활동", "자율자치활동", "진로활동", "봉사활동"]
+ACTIVITY_SECTIONS = ["세부능력특기사항", "동아리활동", "자율자치활동", "진로활동"]
 SECTION_RULES = {
     "세부능력특기사항": "선택 과목의 수업 개념, 교과 탐구, 수행평가와 연결한 학습 활동만 설계한다. 봉사나 동아리 활동으로 대체하지 않는다.",
     "동아리활동": "동아리의 공동 프로젝트와 학생의 역할·협업·탐구 결과를 중심으로 설계한다.",
     "자율자치활동": "학급·학교 공동체의 문제 해결, 학생 자치, 의사결정과 역할 수행을 중심으로 설계한다.",
     "진로활동": "희망 학과의 학습 주제·직업을 탐색하고 진로 질문과 성찰을 구체화하는 활동을 설계한다.",
-    "봉사활동": "도움이 필요한 대상과 실제 필요, 학생이 제공할 도움, 수행 방법과 피드백을 명시한다. 단순 탐구 보고서·설문만으로 대체하지 않는다. 봉사시간 인정 여부나 실적은 보장하지 않는다.",
 }
 
 
