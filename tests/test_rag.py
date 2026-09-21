@@ -331,6 +331,86 @@ class RagTests(unittest.TestCase):
         self.assertIn("조사·분석 방법", criteria[1].revision_direction)
         self.assertIn("탐구확장성, 탐구주도성", criteria[1].recommendation)
 
+    def test_uos_uses_student_comprehensive_type_two_weights(self):
+        weights = Document(
+            page_content=(
+                "학생부종합전형I(면접형)\n"
+                "전형단계 구분 학업역량 잠재역량 사회역량 계\n"
+                "서류평가 35%(175점) 40%(200점) 25%(125점) 100%(500점)\n"
+                "학생부종합전형II(서류형)\n"
+                "전형단계 구분 학업역량 잠재역량 사회역량 계\n"
+                "일괄 서류평가 30%(300점) 50%(500점) 20%(200점) 100%(1,000점)\n"
+                "학업역량 고교 기초 학업 능력 대학 전공 기초 소양\n"
+                "잠재역량 다학제적 전공수학 열의 통합적인 문제해결 역량\n"
+                "사회역량 공동체 및 시민윤리의식 협동학습능력"
+            ),
+            metadata={"source": "서울시립대학교_모집요강.pdf", "page": 45, "printed_page": 44},
+        )
+        details = Document(
+            page_content=(
+                "다. 평가 준거\n"
+                "주요 교과 학업성취도 및 성적 추이\n"
+                "관심 분야 탐구 및 교육활동 경험의 우수성, 지속성, 다양성\n"
+                "협력 등 팀워크 사례"
+            ),
+            metadata={"source": "서울시립대학교_모집요강.pdf", "page": 46, "printed_page": 45},
+        )
+        criteria, _ = extract_college_criteria(
+            [weights, details], "교과 탐구와 모둠 협업을 수행함", "서울시립대학교",
+        )
+        self.assertEqual(
+            [(item.area, item.weight) for item in criteria],
+            [("학업역량", "30%"), ("잠재역량", "50%"), ("사회역량", "20%")],
+        )
+        self.assertEqual(
+            criteria[1].subcriteria,
+            ["다학제적 전공수학 열의", "통합적인 문제해결 역량"],
+        )
+        self.assertEqual(criteria[2].evaluation_points, ["협력 등 팀워크 사례"])
+        self.assertEqual(criteria[2].printed_pages, [44, 45])
+
+    def test_new_college_profiles_use_their_official_weights(self):
+        cases = (
+            (
+                "명지대학교", "미디어커뮤니케이션학과",
+                "명지인재서류 서류형 학업성취도 학업태도 진로설계역량 진로학업역량 "
+                "진로탐색역량 성실성과 규칙준수 협업과 소통능력",
+                [("학업역량", "30%"), ("진로역량", "50%"), ("공동체역량", "20%")],
+            ),
+            (
+                "건국대학교", "컴퓨터공학부",
+                "학생부종합전형 전체 1,000점 학업성취도 학업태도 탐구력 "
+                "전공(계열) 관련 교과 이수 노력 전공(계열) 관련 교과 성취도 "
+                "진로 탐색 활동과 경험 협업과 소통능력 나눔과 배려 성실성과 규칙준수 리더십",
+                [("학업역량", "30%"), ("진로역량", "40%"), ("공동체역량", "30%")],
+            ),
+            (
+                "건국대학교", "KU자유전공학부",
+                "학생부종합전형 전체 1,000점 학업성취도 학업태도 자기주도성 "
+                "창의적 문제해결력 경험의 다양성 탐구력 협업과 소통능력 나눔과 배려 "
+                "성실성과 규칙준수 리더십",
+                [("학업역량", "20%"), ("성장역량", "50%"), ("공동체역량", "30%")],
+            ),
+            (
+                "가톨릭대학교", "심리학과",
+                "서류종합평가요소별 반영비율 주요 평가 관점 학업성취도 학업태도 탐구력 "
+                "전공(계열) 관련 교과 이수 노력 전공(계열) 관련 교과 성취도 "
+                "진로 탐색 활동과 경험 협업과 소통능력 나눔과 배려 성실성과 규칙준수 리더십",
+                [("학업역량", "40%"), ("진로역량", "35%"), ("공동체역량", "25%")],
+            ),
+        )
+        for university, department, text, expected in cases:
+            with self.subTest(university=university, department=department):
+                document = Document(
+                    page_content=text,
+                    metadata={"source": f"{university}_모집요강.pdf", "page": 1},
+                )
+                criteria, evidence_ids = extract_college_criteria(
+                    [document], "교과 탐구를 계획하고 친구들과 협력함", university, department,
+                )
+                self.assertEqual([(item.area, item.weight) for item in criteria], expected)
+                self.assertEqual(evidence_ids, [1])
+
     def test_dongguk_student_comprehensive_criteria_are_found_without_fixed_page(self):
         details = Document(
             page_content=(
