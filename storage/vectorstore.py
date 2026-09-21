@@ -11,6 +11,8 @@ from langchain_chroma import Chroma
 
 from config import (
     COLLEGE_VECTORSTORE,
+    COLLEGE_VECTORSTORES,
+    COLLEGE_COLLECTIONS,
     GUIDELINE_VECTORSTORE,
     COLLEGE_COLLECTION,
     GUIDELINE_COLLECTION,
@@ -46,9 +48,15 @@ def _open_store(directory, collection, embedding):
     )
 
 
-@lru_cache(maxsize=1)
-def load_college_vectorstore():
-    return _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, get_embeddings())
+@lru_cache(maxsize=None)
+def load_college_vectorstore(university: str = "성균관대학교"):
+    if university not in COLLEGE_VECTORSTORES:
+        raise ValueError(f"등록되지 않은 대학입니다: {university}")
+    return _open_store(
+        COLLEGE_VECTORSTORES[university],
+        COLLEGE_COLLECTIONS[university],
+        get_embeddings(),
+    )
 
 
 @lru_cache(maxsize=1)

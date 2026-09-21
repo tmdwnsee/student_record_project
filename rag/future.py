@@ -6,7 +6,6 @@ from config import COLLEGE_GUIDES, MODEL, OLLAMA_BASE_URL
 from rag.attachment import prepare_record_context
 from rag.criteria import extract_college_criteria
 from rag.retriever import retrieve_college_context
-from rag.validation import select_evidence
 from storage.vectorstore import load_college_vectorstore
 
 ACTIVITY_SECTIONS = ["세부능력특기사항", "동아리활동", "자율자치활동", "진로활동", "봉사활동"]
@@ -56,8 +55,10 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
     if section_type == "세부능력특기사항" and not subject:
         raise ValueError("반영을 희망하는 과목을 입력하세요.")
     query = f"{section_type} {subject} {department.strip()} {student_draft}"
-    documents = retrieve_college_context(load_college_vectorstore(), query, university, department)
-    criteria, ids = extract_college_criteria(documents, student_draft, university)
+    documents = retrieve_college_context(load_college_vectorstore(university), query, university, department)
+    criteria, _ = extract_college_criteria(
+        documents, student_draft, university, department.strip()
+    )
     if not criteria:
         raise ValueError("모집요강에서 평가 항목과 반영 비율을 확인하지 못했습니다. 등록된 자료를 확인하세요.")
     if len({c.area for c in criteria}) != len(criteria):
@@ -117,6 +118,6 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
         "uses_previous_record": uses_previous_record,
         "summary": f"{target} {section_type}{f' · {subject}' if subject else ''} 보완 계획입니다. 아직 수행하지 않은 미래 활동 제안입니다.",
         "future_activities": [{"criterion": c.area, "weight": c.weight, **getattr(generated, f"activity_{i}").model_dump()} for i, c in enumerate(criteria)],
-        "college_criteria": criteria, "college_evidence": select_evidence(ids, documents),
+        "college_criteria": criteria,
         "record_context": record_context, "record_matches": record_matches,
     }

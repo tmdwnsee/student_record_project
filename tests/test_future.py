@@ -17,7 +17,10 @@ class FutureTests(unittest.TestCase):
             model.invoke.return_value = schema(**{name: plan for name in schema.model_fields})
             return model
         model.with_structured_output.side_effect = structured
-        document = Document(page_content="학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)", metadata={"source": "college.pdf", "page": 2})
+        document = Document(
+            page_content="관련 없는 전형 안내\n학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)",
+            metadata={"source": "college.pdf", "page": 2},
+        )
         with patch("rag.future.ChatOllama", return_value=model), patch("rag.future.load_college_vectorstore"), patch(
             "rag.future.retrieve_college_context", return_value=[document]
         ), patch("rag.future.prepare_record_context", return_value=("기존 활동 근거", [{
@@ -80,6 +83,7 @@ class FutureTests(unittest.TestCase):
             self.assertIn(text, prompt)
         self.assertEqual(len(result["future_activities"]), 3)
         self.assertEqual([a["weight"] for a in result["future_activities"]], ["40%", "40%", "20%"])
+        self.assertNotIn("college_evidence", result)
         self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 3)
         self.assertTrue(context.call_args.kwargs["return_matches"])
         self.assertEqual(context.call_args.kwargs["layout_noise_terms"], ["확률과 통계"])
@@ -108,6 +112,12 @@ class FutureTests(unittest.TestCase):
                 app.button[0].click().run()
                 self.assertFalse(app.exception)
                 self.assertEqual([x.value for x in app.subheader], ["1. 활동 가이드", "2. 근거"])
+                rendered_values = [
+                    str(element.value)
+                    for collection in (app.markdown, app.text, app.caption)
+                    for element in collection
+                ]
+                self.assertFalse(any("관련 없는 전형 안내" in value for value in rendered_values))
                 self.assertTrue(any("자료 비교·분석 경험" in item.value for item in app.markdown))
                 self.assertTrue(any("기존 생기부 원문" in item.value for item in app.markdown))
                 self.assertTrue(any("기존 활동 원문" in item.value for item in app.markdown))

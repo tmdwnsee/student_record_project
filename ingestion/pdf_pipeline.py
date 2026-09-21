@@ -55,6 +55,9 @@ class PageResult:
 class PipelineConfig:
     min_chars: int = 80
     dpi: int = 180
+    enable_ocr: bool = True
+    pymupdf_sort: bool = True
+    prefer_pymupdf: bool = False
 
 
 # PDF 문서별 검색 품질을 높이기 위한 표준 헤딩 후보
@@ -71,11 +74,19 @@ HEADING_PATTERNS = [
 ]
 
 
-def _run_pdftotext(path: Path) -> list[str]:
+def _run_pdftotext(
+    path: Path, first_page: int | None = None, last_page: int | None = None,
+) -> list[str]:
     """pdftotext -layout 결과를 페이지 단위 문자열로 반환."""
     try:
+        command = ["pdftotext", "-layout"]
+        if first_page is not None:
+            command.extend(["-f", str(first_page)])
+        if last_page is not None:
+            command.extend(["-l", str(last_page)])
+        command.extend([str(path), "-"])
         proc = subprocess.run(
-            ["pdftotext", "-layout", str(path), "-"],
+            command,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -160,8 +171,10 @@ def _clean_text(text: str) -> str:
     return text.strip()
 
 
-def extract_pymupdf_text(doc: pymupdf.Document, page_number: int) -> str:
-    return _clean_text(doc[page_number - 1].get_text("text", sort=True))
+def extract_pymupdf_text(
+    doc: pymupdf.Document, page_number: int, *, sort: bool = True,
+) -> str:
+    return _clean_text(doc[page_number - 1].get_text("text", sort=sort))
 
 
 def extract_pymupdf_blocks(doc: pymupdf.Document, page_number: int) -> str:
@@ -227,6 +240,7 @@ def process_pdf(
     expected_terms_by_page: Optional[dict[int, list[str]]] = None,
     config: Optional[PipelineConfig] = None,
     vision_hook: Optional[VISION_HOOK] = None,
+    page_numbers: Optional[Iterable[int]] = None,
 ) -> list[PageResult]:
     """PDF 전체를 페이지별로 단계적 추출.
 
@@ -238,21 +252,35 @@ def process_pdf(
     if not path.exists():
         raise FileNotFoundError(path)
 
-    pdftotext_pages = _run_pdftotext(path)
     doc = pymupdf.open(path)
+    selected_pages = sorted(set(page_numbers or range(1, doc.page_count + 1)))
+    invalid_pages = [page for page in selected_pages if page < 1 or page > doc.page_count]
+    if invalid_pages:
+        doc.close()
+        raise ValueError(f"PDF 범위를 벗어난 페이지입니다: {invalid_pages}")
+    first_page = min(selected_pages)
+    last_page = max(selected_pages)
+    pdftotext_pages = (
+        [] if config.prefer_pymupdf
+        else _run_pdftotext(path, first_page, last_page)
+    )
     results: list[PageResult] = []
 
-    for pno in range(1, doc.page_count + 1):
+    for pno in selected_pages:
         expected_terms = (expected_terms_by_page or {}).get(pno, [])
 
         # 1) pdftotext -layout
-        text = _clean_text(pdftotext_pages[pno - 1] if pno - 1 < len(pdftotext_pages) else "")
+        pdftotext_index = pno - first_page
+        text = _clean_text(
+            pdftotext_pages[pdftotext_index]
+            if pdftotext_index < len(pdftotext_pages) else ""
+        )
         q = quality_check(text, expected_terms=expected_terms, min_chars=config.min_chars)
         method = "pdftotext-layout"
 
         # 2) PyMuPDF text
         if not q.ok:
-            candidate = extract_pymupdf_text(doc, pno)
+            candidate = extract_pymupdf_text(doc, pno, sort=config.pymupdf_sort)
             cq = quality_check(candidate, expected_terms=expected_terms, min_chars=config.min_chars)
             if cq.score > q.score:
                 text, q, method = candidate, cq, "pymupdf-text"
@@ -265,7 +293,7 @@ def process_pdf(
                 text, q, method = candidate, cq, "pymupdf-blocks"
 
         # 4) RapidOCR
-        if not q.ok:
+        if not q.ok and config.enable_ocr:
             image_bytes = render_page(doc, pno, config.dpi)
             try:
                 candidate, ocr_score = rapidocr_text(image_bytes)
@@ -322,6 +350,20 @@ def process_pdf(
 
 def detect_printed_page(text: str, fallback: Optional[int] = None) -> Optional[int]:
     """본문의 '70' 같은 인쇄 페이지 번호를 찾을 때 쓰는 보수적 휴리스틱."""
+    # 대학 모집요강은 인쇄 쪽수를 머리말·꼬리말의 시작 또는 끝에 두는 경우가 많습니다.
+    # 장·절 번호와 혼동하지 않도록 PDF 물리 페이지와 가까운 숫자만 채택합니다.
+    if fallback is not None:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        candidates = []
+        for line in lines[:3] + lines[-3:]:
+            for pattern in (r"^(\d{1,3})\b", r"\b(\d{1,3})$"):
+                match = re.search(pattern, line)
+                if match:
+                    value = int(match.group(1))
+                    if value > 0 and abs(value - fallback) <= 10:
+                        candidates.append(value)
+        if candidates:
+            return min(candidates, key=lambda value: abs(value - fallback))
     patterns = [
         r"수시모집요(?:강|⊙).*?\s(\d{1,3})\b",
         r"학교생활기록부.*?(?:p\.?|페이지)\s*(\d{1,3})",
@@ -342,14 +384,7 @@ def page_results_to_documents(results: Iterable[PageResult]):
 
 
 def targeted_pages_for_document(document_type: str) -> dict[int, list[str]]:
-    """현재 프로젝트에서 먼저 품질을 강하게 검사할 핵심 페이지 정의."""
-    if document_type == "skku_2027":
-        return {
-            72: ["학생부종합전형 서류평가 방법", "학업역량(40%)", "탐구역량(40%)", "잠재역량(20%)"],
-        }
-    # 2026 요령은 이미지형이므로 특정 페이지를 hard-code하지 않고 OCR 전제로 둔다.
-    if document_type == "school_record_guide_2026":
-        return {}
+    """이전 호출부 호환용. 페이지 선택은 config.py에서 관리합니다."""
     return {}
 
 
@@ -376,6 +411,8 @@ def build_source_documents(
     document_type: str,
     expected_terms_by_page: Optional[dict[int, list[str]]] = None,
     vision_hook: Optional[VISION_HOOK] = None,
+    config: Optional[PipelineConfig] = None,
+    page_numbers: Optional[Iterable[int]] = None,
 ):
     """현재 retriever.py에서 바로 사용할 수 있는 LangChain Documents 생성."""
     results = process_pdf(
@@ -383,5 +420,7 @@ def build_source_documents(
         document_type=document_type,
         expected_terms_by_page=expected_terms_by_page,
         vision_hook=vision_hook,
+        config=config,
+        page_numbers=page_numbers,
     )
     return page_results_to_documents(results), summarize_page_failures(results)

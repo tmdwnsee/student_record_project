@@ -8,18 +8,42 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIRECTORY = PROJECT_ROOT / "data"
 VECTORSTORE_DIRECTORY = PROJECT_ROOT / "vectorstores"
 
-COLLEGE_PDF = DATA_DIRECTORY / "college_table.pdf"
+SKKU_PDF = DATA_DIRECTORY / "성균관대학교_모집요강.pdf"
+DONGGUK_PDF = DATA_DIRECTORY / "동국대학교_모집요강.pdf"
+KYUNGHEE_PDF = DATA_DIRECTORY / "경희대학교_모집요강.pdf"
 GUIDELINE_PDF = DATA_DIRECTORY / "student_record_rule.pdf"
 
-# 현재는 성균관대학교만 지원합니다. 대학을 추가할 때 data/의 PDF 경로를 등록합니다.
 COLLEGE_GUIDES = {
-    "성균관대학교": COLLEGE_PDF,
+    "성균관대학교": SKKU_PDF,
+    "동국대학교": DONGGUK_PDF,
+    "경희대학교": KYUNGHEE_PDF,
 }
 
-COLLEGE_VECTORSTORE = VECTORSTORE_DIRECTORY / "college"
+# PDF 뷰어 기준(표지 포함, 1부터 시작) 평가기준 페이지입니다.
+COLLEGE_GUIDE_PAGES = {
+    "성균관대학교": (72,),
+    "동국대학교": (93, 94),
+    "경희대학교": (63, 64),
+}
+
+# 복잡한 다단 표는 좌표 정렬보다 PDF 내부 읽기 순서가 열 관계를 더 잘 보존합니다.
+COLLEGE_NATURAL_TEXT_ORDER = {"경희대학교"}
+
+COLLEGE_VECTORSTORES = {
+    university: VECTORSTORE_DIRECTORY / pdf_path.stem
+    for university, pdf_path in COLLEGE_GUIDES.items()
+}
+COLLEGE_COLLECTIONS = {
+    university: f"college_{index}"
+    for index, university in enumerate(COLLEGE_GUIDES, start=1)
+}
+
+# 이전 import 경로와 작성요령 관련 코드의 호환성을 유지합니다.
+COLLEGE_PDF = SKKU_PDF
+COLLEGE_VECTORSTORE = COLLEGE_VECTORSTORES["성균관대학교"]
+COLLEGE_COLLECTION = COLLEGE_COLLECTIONS["성균관대학교"]
 GUIDELINE_VECTORSTORE = VECTORSTORE_DIRECTORY / "guideline"
 
-COLLEGE_COLLECTION = "college_collection"
 GUIDELINE_COLLECTION = "guideline_collection"
 
 EMBEDDING_MODEL = "BAAI/bge-m3"

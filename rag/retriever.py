@@ -106,10 +106,10 @@ def retrieve_college_context(store: Chroma, student_draft: str, university: str 
     """평가 비율과 평가요소가 서로 다른 청크에 있어도 함께 검색합니다."""
     queries = [
         f"{COLLEGE_QUERY}\n검토할 학생 활동: {student_draft}\n희망 대학: {university}\n희망 학과: {department}",
-        "학생부종합전형 평가 영역 및 반영 비율 학업수월성 학업충실성 탐구확장성 탐구주도성 미래성장성 공동체의식",
-        "학업역량 평가요소 학업성취도 학업 발전 학업 관심 열의 선택과목 이수노력 성취수준",
-        "탐구역량 평가요소 관심 분야 이해 탐구력 실험정신 지적 호기심 진로탐색 자기주도적 탐구",
-        "잠재역량 평가요소 학교생활 성실성 공동체의식 리더십 봉사정신 협업 소통능력",
+        "학생부종합 서류종합평가 서류평가 평가항목 세부평가항목 평가기준 배점 반영비율 최고점 최저점",
+        "학생부종합 평가영역 평가요소 평가내용 학업역량 전공적합성 진로역량 자기주도역량 공동체역량 탐구역량 성장가능성 인성 사회성",
+        "학생부종합 학업 수행과정 탐구능력 진로탐색 전공 관심 역할 주도성 협업 소통 평가",
+        "학생부종합 평가 항목별 반영 비율 30% 40% 50% 20% 계 100%",
     ]
     results: list[Document] = []
     seen = set()
@@ -121,6 +121,26 @@ def retrieve_college_context(store: Chroma, student_draft: str, university: str 
                 document.metadata.get("page"),
                 document.page_content,
             )
+            if key not in seen:
+                seen.add(key)
+                results.append(document)
+
+    # 표가 여러 청크로 나뉘면 검색된 일부 청크만으로 행 관계를 복원하기 어렵습니다.
+    # 평가기준 신호가 발견된 페이지는 해당 페이지의 청크 전체를 추가합니다.
+    evaluation_pages = sorted({
+        document.metadata.get("page")
+        for document in results
+        if document.metadata.get("page") is not None
+        and re.search(r"서류종합평가|서류평가|평가항목|평가요소|평가기준|반영\s*비율", document.page_content)
+    })
+    if evaluation_pages:
+        page_data = store.get(
+            where={"page": {"$in": evaluation_pages}},
+            include=["documents", "metadatas"],
+        )
+        for content, metadata in zip(page_data.get("documents", []), page_data.get("metadatas", [])):
+            document = Document(page_content=content, metadata=metadata)
+            key = (str(metadata.get("source", "")), metadata.get("page"), content)
             if key not in seen:
                 seen.add(key)
                 results.append(document)

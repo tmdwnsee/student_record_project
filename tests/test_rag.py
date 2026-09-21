@@ -331,6 +331,90 @@ class RagTests(unittest.TestCase):
         self.assertIn("조사·분석 방법", criteria[1].revision_direction)
         self.assertIn("탐구확장성, 탐구주도성", criteria[1].recommendation)
 
+    def test_dongguk_student_comprehensive_criteria_are_found_without_fixed_page(self):
+        details = Document(
+            page_content=(
+                "서류종합평가\n○ 평가항목 및 내용 : 평가서류의 내용을 평가항목별로 종합평가\n"
+                "■ 입학 후 학업을 수행할 수 있는 기초수학역량\n기초학업역량\n"
+                "■ 기초교과 중심의 종합적인 학업역량\n학업역량\n"
+                "■ 학업 수행과정에서의 주도적인 태도와 탐구능력\n학습의 주도성\n"
+                "■ 전공 관련 교과목의 학업 이수 과정\n전공수학역량\n"
+                "■ 전공 관련 교과목의 학업 성취도\n전공적합성\n"
+                "■ 진로탐색 활동 노력 및 탐구과정\n전공관심도 및 진로탐색노력\n"
+                "■ 학교생활의 다양한 영역에서 주도적으로 역할을 수행한 경험\n역할의 주도성\n"
+                "■ 공동체의 목표달성을 위해 협력한 경험\n협업소통능력\n인성 및 사회성"
+            ),
+            metadata={"source": "동국대학교_모집요강.pdf", "page": 92, "start_index": 0},
+        )
+        weights = Document(
+            page_content=(
+                "■ 학생부종합 Do Dream, 불교추천인재\n평가항목 세부평가항목 반영비율\n"
+                "기초학업역량\n학업역량 30% 30점\n학습의 주도성\n"
+                "전공수학역량\n전공적합성 50% 50점\n전공관심도 및 진로탐색노력\n"
+                "역할의 주도성\n인성 및 사회성 20% 20점\n협업소통능력\n계 100%"
+            ),
+            metadata={"source": "동국대학교_모집요강.pdf", "page": 93, "start_index": 0},
+        )
+        criteria, evidence_ids = extract_college_criteria(
+            [details, weights], "문학 작품을 조사하고 친구들과 토론함", "동국대학교",
+        )
+        self.assertEqual(
+            [(item.area, item.weight) for item in criteria],
+            [("학업역량", "30%"), ("전공적합성", "50%"), ("인성 및 사회성", "20%")],
+        )
+        self.assertEqual(criteria[1].subcriteria, ["전공수학역량", "전공관심도 및 진로탐색노력"])
+        self.assertIn("전공 관련 교과목의 학업 이수 과정", criteria[1].evaluation_points)
+        self.assertFalse(any("전공 관련" in point for point in criteria[0].evaluation_points))
+        self.assertEqual(criteria[1].evidence_pages, [92, 93])
+        self.assertEqual(set(evidence_ids), {1, 2})
+
+    def test_hierarchical_subcriteria_weights_are_aggregated_for_general_department(self):
+        first_page = Document(
+            page_content=(
+                "학생부종합전형 서류평가\n평가 요소·비율 및 평가 항목\n"
+                "학업역량\n학업성취도 (25%)\n학업태도 및 탐구력 (15%)\n"
+                "- 대학 수학에 필요한 기본 교과목의\n교과 성적은 적절한가? "
+                "그 외 교과목의 성취는 어느 정도인가?\n"
+                "- 자기주도적으로 학습하려는 의지가 있는가?\n"
+                "진로역량\n전공(계열) 관련 교과 이수 노력 및 성취도 (25%)\n"
+                "진로 탐색 활동과 경험 (15%)\n- 관심 분야 활동에 참여한 경험이 있는가?\n"
+                "자기주도역량\n자기주도 교과 이수 노력 및 성취도 (25%)\n"
+                "자기주도 진로 탐색 활동과 경험 (15%)"
+            ),
+            metadata={
+                "source": "경희대학교_모집요강.pdf", "page": 62,
+                "printed_page": 61, "start_index": 0,
+            },
+        )
+        second_page = Document(
+            page_content=(
+                "공동체역량\n협업과 소통능력, 리더십 (10%)\n"
+                "- 공동의 과제를 수행한 경험이 있는가?\n"
+                "나눔과 배려, 성실성과 규칙준수 (10%)\n"
+                "- 자신이 맡은 역할에 최선을 다했는가?"
+            ),
+            metadata={
+                "source": "경희대학교_모집요강.pdf", "page": 63,
+                "printed_page": 62, "start_index": 0,
+            },
+        )
+        criteria, _ = extract_college_criteria(
+            [first_page, second_page], "문학 작품을 조사하고 모둠 토론에 참여함",
+            "경희대학교", "국어국문학과",
+        )
+        self.assertEqual(
+            [(item.area, item.weight) for item in criteria],
+            [("학업역량", "40%"), ("진로역량", "40%"), ("공동체역량", "20%")],
+        )
+        self.assertEqual(criteria[0].subcriteria, ["학업성취도", "학업태도 및 탐구력"])
+        self.assertIn(
+            "대학 수학에 필요한 기본 교과목의 교과 성적은 적절한가? 그 외 교과목의 성취는 어느 정도인가?",
+            criteria[0].evaluation_points,
+        )
+        self.assertFalse(any("관심 분야 활동" in point for point in criteria[0].evaluation_points))
+        self.assertEqual(criteria[0].printed_pages, [61])
+        self.assertEqual(criteria[2].printed_pages, [62])
+
     def test_persistence_deduplication_and_changed_pdf(self):
         embedding = CountingEmbeddings()
         documents = [Document(page_content="평가 기준", metadata={"source": "college_table.pdf", "page": 71})]

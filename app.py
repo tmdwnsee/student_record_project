@@ -6,7 +6,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "grade-scope-and-record-context-v8"
+GUIDE_PIPELINE_VERSION = "complete-college-question-text-v11"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
@@ -118,10 +118,6 @@ if result and st.session_state.get("guide_context_key") == context_key:
                 st.write(criterion.evaluation_question)
             for point in criterion.evaluation_points:
                 st.write(f"• {point}")
-    for evidence in result["college_evidence"]:
-        page = f"PDF {evidence.page + 1}쪽" if evidence.page is not None else "페이지 미확인"
-        with st.expander(f"모집요강 원문 · {evidence.source} · {page}"):
-            st.write(evidence.content)
     if result.get("uses_previous_record"):
         st.markdown("3. 참고한 기존 생기부 경험")
         with st.expander("참고한 경험과 선정 이유 보기"):
