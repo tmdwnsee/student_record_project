@@ -32,10 +32,45 @@ class FutureTests(unittest.TestCase):
     def test_next_semester(self):
         self.assertEqual(next_semester(1, 1), "1학년 2학기")
         self.assertEqual(next_semester(2, 2), "3학년 1학기")
-        self.assertEqual(next_semester(3, 1), "3학년 2학기")
-        for grade, semester in [(3, 2), (0, 1), (1, 3)]:
+        for grade, semester in [(3, 1), (3, 2), (0, 1), (1, 3)]:
             with self.assertRaises(ValueError):
                 next_semester(grade, semester)
+
+    def test_first_year_first_semester_uses_only_current_draft(self):
+        model = Mock()
+        plan = FutureActivity(
+            title="다음 학기 활동", rationale="자기평가보고서의 현재 경험을 확장", goal="탐구 과정 보완",
+            department_connection="학과 분야와 연결", success_check="탐구 과정과 결과물 확인",
+            steps=[ActivityStep(action="수업 자료를 비교하고 탐구 과정을 단계별로 기록한다.", output="탐구 기록") for _ in range(3)],
+        )
+
+        def structured(schema, **kwargs):
+            model.invoke.return_value = schema(**{name: plan for name in schema.model_fields})
+            return model
+
+        model.with_structured_output.side_effect = structured
+        document = Document(
+            page_content="학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)",
+            metadata={"source": "college.pdf", "page": 2},
+        )
+        with patch("rag.future.ChatOllama", return_value=model), patch(
+            "rag.future.load_college_vectorstore"
+        ), patch("rag.future.retrieve_college_context", return_value=[document]), patch(
+            "rag.future.prepare_record_context"
+        ) as context:
+            result = generate_future_guide(
+                "현재 자기평가 경험", "성균관대학교", "통계학과",
+                current_grade=1, current_semester=1, section_type="세부능력특기사항", subject="수학",
+            )
+
+        context.assert_not_called()
+        self.assertFalse(result["uses_previous_record"])
+        self.assertEqual(result["record_context"], "")
+        self.assertEqual(result["record_matches"], [])
+        prompt = str(model.invoke.call_args.args[0])
+        self.assertIn("[현재 경험: 자기평가보고서]", prompt)
+        self.assertIn("기존 생기부가 없다", prompt)
+        self.assertNotIn("[과거 경험: 기존 생기부 관련 구간]", prompt)
 
     def test_subject_and_target_reach_single_generation(self):
         result, model, context = self.build_result()
@@ -88,8 +123,14 @@ class FutureTests(unittest.TestCase):
                 app.selectbox(key="guide_section_type").set_value("봉사활동").run()
                 self.assertFalse(app.subheader)
                 self.assertNotIn("guide_subject", [x.key for x in app.text_input])
-                app.selectbox(key="guide_grade").set_value(3).run()
-                self.assertTrue(app.button[0].disabled)
+                self.assertEqual(app.selectbox(key="guide_grade").options, ["1학년", "2학년"])
+
+    def test_first_year_first_semester_hides_record_upload(self):
+        with patch("streamlit.file_uploader") as uploader:
+            app = AppTest.from_file(str(PROJECT_ROOT / "app.py")).run()
+        self.assertFalse(app.exception)
+        uploader.assert_not_called()
+        self.assertTrue(any("기존 생기부 없이" in item.value for item in app.caption))
 
 
 if __name__ == "__main__":

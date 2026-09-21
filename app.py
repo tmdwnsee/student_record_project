@@ -6,7 +6,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "record-experience-titles-v7"
+GUIDE_PIPELINE_VERSION = "grade-scope-and-record-context-v8"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
@@ -26,7 +26,7 @@ st.markdown("""<style>
 .record-note {margin:.5rem 0 0;color:#6b7280;font-size:.82rem;line-height:1.6}
 </style>""", unsafe_allow_html=True)
 st.title("🎓 대학 맞춤 미래 활동 가이드")
-st.caption("자기평가보고서 초안과 기존 생기부를 바탕으로, 희망 대학의 평가 기준에 맞는 다음 학기 보완 활동을 설계합니다.")
+st.caption("자기평가보고서와 대학 평가 기준을 바탕으로 다음 학기 보완 활동을 설계합니다. 1학년 2학기부터는 기존 생기부 경험도 함께 반영합니다.")
 
 with st.container(border=True):
     a, b = st.columns(2)
@@ -36,7 +36,7 @@ with st.container(border=True):
         department = st.text_input("희망 학과", placeholder="예: 미디어커뮤니케이션학과", key="guide_department")
     a, b = st.columns(2)
     with a:
-        grade = st.selectbox("현재 학년", [1, 2, 3], format_func=lambda value: f"{value}학년", key="guide_grade")
+        grade = st.selectbox("현재 학년", [1, 2], format_func=lambda value: f"{value}학년", key="guide_grade")
     with b:
         semester = st.selectbox("현재 학기", [1, 2], format_func=lambda value: f"{value}학기", key="guide_semester")
     section = st.selectbox("초안의 활동 구분", ACTIVITY_SECTIONS, key="guide_section_type")
@@ -49,8 +49,13 @@ with st.container(border=True):
     except ValueError as error:
         target = ""
         st.warning(str(error))
-    draft = st.text_area("자기평가보고서 초안", height=180, key="guide_draft_input", placeholder="현재까지 수행한 활동, 과정, 역할과 배운 점을 입력하세요.")
-    uploaded = st.file_uploader("기존 생기부 원문", type=["pdf", "txt"], key="guide_uploaded_record", help="PDF 또는 UTF-8 TXT, 최대 10MB")
+    draft = st.text_area("자기평가보고서", height=180, key="guide_draft_input", placeholder="현재까지 수행한 활동, 과정, 역할과 배운 점을 입력하세요.")
+    uses_previous_record = not (grade == 1 and semester == 1)
+    uploaded = None
+    if uses_previous_record:
+        uploaded = st.file_uploader("기존 생기부 원문", type=["pdf", "txt"], key="guide_uploaded_record", help="PDF 또는 UTF-8 TXT, 최대 10MB")
+    else:
+        st.caption("1학년 1학기는 기존 생기부 없이 자기평가보고서만 참고합니다.")
     st.caption("등록된 모집요강 지원 대학: " + ", ".join(COLLEGE_GUIDES))
 
 content = uploaded.getvalue() if uploaded else b""
@@ -62,13 +67,18 @@ if requested and st.session_state.get("guide_result") and st.session_state.get("
 elif requested:
     st.session_state.pop("guide_result", None)
     st.session_state.pop("guide_context_key", None)
-    if not department.strip() or not draft.strip() or not uploaded or (section == "세부능력특기사항" and not subject.strip()):
-        st.warning("희망 학과, 초안, 생기부 원문을 입력하고 세특인 경우 과목도 입력하세요.")
+    missing_record = uses_previous_record and not uploaded
+    if not department.strip() or not draft.strip() or missing_record or (section == "세부능력특기사항" and not subject.strip()):
+        if uses_previous_record:
+            st.warning("희망 학과, 자기평가보고서, 기존 생기부 원문을 입력하고 세특인 경우 과목도 입력하세요.")
+        else:
+            st.warning("희망 학과와 자기평가보고서를 입력하고 세특인 경우 과목도 입력하세요.")
     else:
         try:
-            with st.spinner("대학 평가 기준과 관련 생기부를 확인하고 다음 학기 활동을 설계하고 있습니다..."):
+            with st.spinner("대학 평가 기준과 입력 경험을 확인하고 다음 학기 활동을 설계하고 있습니다..."):
+                previous_record = extract_context(uploaded.name, content) if uses_previous_record else ""
                 result = generate_future_guide(draft, university, department.strip(), current_grade=grade,
-                    current_semester=semester, section_type=section, previous_record=extract_context(uploaded.name, content), subject=subject)
+                    current_semester=semester, section_type=section, previous_record=previous_record, subject=subject)
             st.session_state["guide_result"] = result
             st.session_state["guide_context_key"] = context_key
         except Exception as error:
@@ -112,39 +122,40 @@ if result and st.session_state.get("guide_context_key") == context_key:
         page = f"PDF {evidence.page + 1}쪽" if evidence.page is not None else "페이지 미확인"
         with st.expander(f"모집요강 원문 · {evidence.source} · {page}"):
             st.write(evidence.content)
-    st.markdown("3. 참고한 기존 생기부 경험")
-    with st.expander("참고한 경험과 선정 이유 보기"):
-        if result.get("record_matches"):
-            st.caption("학생이 이미 수행한 주제·탐구 방법·역할 중 다음 학기 활동으로 이어 갈 수 있는 경험을 선별했습니다.")
-            for index, match in enumerate(result["record_matches"], 1):
-                display_original = " ".join(match["original"].split())
-                experience_title = match.get("experience_title", "").strip()
-                if not experience_title:
-                    experience_title = display_original[:40] + ("…" if len(display_original) > 40 else "")
-                repair_note = (
-                    '<div class="record-note">PDF 표에서 본문 사이에 끼어든 과목명을 제거해 문장을 복원했습니다.</div>'
-                    if match.get("text_was_repaired") else ""
-                )
-                st.markdown(
-                    f"""
-                    <section class="record-item">
-                      <div class="record-heading">
-                        <span class="record-number">{index:02d}</span>
-                        <span>{html.escape(experience_title)}</span>
-                      </div>
-                      <div class="record-group">
-                        <div class="record-label"><span class="record-dot"></span>기존 생기부 원문</div>
-                        <p class="record-body">{html.escape(display_original)}</p>
-                        {repair_note}
-                      </div>
-                      <div class="record-group">
-                        <div class="record-label"><span class="record-dot reason"></span>이 경험을 관련 있다고 판단한 이유</div>
-                        <p class="record-body">{html.escape(match["connection_reason"])}</p>
-                      </div>
-                    </section>
-                    """,
-                    unsafe_allow_html=True,
-                )
-        else:
-            st.write(result["record_context"])
+    if result.get("uses_previous_record"):
+        st.markdown("3. 참고한 기존 생기부 경험")
+        with st.expander("참고한 경험과 선정 이유 보기"):
+            if result.get("record_matches"):
+                st.caption("학생이 이미 수행한 주제·탐구 방법·역할 중 다음 학기 활동으로 이어 갈 수 있는 경험을 선별했습니다.")
+                for index, match in enumerate(result["record_matches"], 1):
+                    display_original = " ".join(match["original"].split())
+                    experience_title = match.get("experience_title", "").strip()
+                    if not experience_title:
+                        experience_title = display_original[:40] + ("…" if len(display_original) > 40 else "")
+                    repair_note = (
+                        '<div class="record-note">PDF 표에서 본문 사이에 끼어든 과목명을 제거해 문장을 복원했습니다.</div>'
+                        if match.get("text_was_repaired") else ""
+                    )
+                    st.markdown(
+                        f"""
+                        <section class="record-item">
+                          <div class="record-heading">
+                            <span class="record-number">{index:02d}</span>
+                            <span>{html.escape(experience_title)}</span>
+                          </div>
+                          <div class="record-group">
+                            <div class="record-label"><span class="record-dot"></span>기존 생기부 원문</div>
+                            <p class="record-body">{html.escape(display_original)}</p>
+                            {repair_note}
+                          </div>
+                          <div class="record-group">
+                            <div class="record-label"><span class="record-dot reason"></span>이 경험을 관련 있다고 판단한 이유</div>
+                            <p class="record-body">{html.escape(match["connection_reason"])}</p>
+                          </div>
+                        </section>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.write(result["record_context"])
     st.caption("대학 기준은 등록된 모집요강에서 확인한 내용이며, 학과 연결과 미래 활동은 AI의 제안입니다. 적용 학년도와 전형은 원문을 확인하세요.")
