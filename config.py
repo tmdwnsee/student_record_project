@@ -6,7 +6,11 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 DATA_DIRECTORY = PROJECT_ROOT / "data"
-VECTORSTORE_DIRECTORY = PROJECT_ROOT / "vectorstores"
+# Chroma 1.5.x cannot reopen a persisted HNSW index on Windows when the
+# persist_directory string contains non-ASCII characters.  Keep this path
+# relative so projects checked out below a Korean-named directory still work.
+# Run the application and index builder from PROJECT_ROOT as documented.
+VECTORSTORE_DIRECTORY = Path("vectorstores")
 
 SKKU_PDF = DATA_DIRECTORY / "성균관대학교_모집요강.pdf"
 DONGGUK_PDF = DATA_DIRECTORY / "동국대학교_모집요강.pdf"
