@@ -6,7 +6,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "clean-record-reference-guide-v18"
+GUIDE_PIPELINE_VERSION = "clean-record-reference-guide-v21"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>

@@ -27,6 +27,16 @@ class FutureTests(unittest.TestCase):
         self.assertNotIn("근거 2", result)
         self.assertIn("기존 생기부에서는", result)
 
+    def test_malformed_evidence_reference_and_hanja_are_cleaned(self):
+        result = _naturalize_evidence_references(
+            "기존 생기부 경험와 3 의 민주적 의사결정 및 스크립트朗誦 경험을 연결합니다."
+        )
+        self.assertEqual(
+            result,
+            "기존 생기부의 민주적 의사결정 및 스크립트낭송 경험을 연결합니다.",
+        )
+        self.assertNotRegex(result, r"[\u3400-\u9fff]")
+
     def test_future_plan_declarative_tone_is_changed_to_advice(self):
         result = _to_advisory_style("자료를 수집합니다. 분석의 정확도를 높입니다.")
         self.assertNotIn("수집합니다", result)

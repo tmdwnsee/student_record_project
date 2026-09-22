@@ -13,6 +13,8 @@ from streamlit.testing.v1 import AppTest
 from config import PROJECT_ROOT
 from rag.attachment import (
     CandidateVerdict,
+    OcrCorrection,
+    OcrCorrectionBatch,
     RecordSelection,
     _repair_layout_intrusions,
     _retrieve_record_candidates,
@@ -76,6 +78,86 @@ class RagTests(unittest.TestCase):
         self.assertEqual(_safe_corrected_ocr(original, corrected), corrected)
         changed_date = "진로적성검사(2023.05.13.)를 진행하여 미디어 진로를 탐색함."
         self.assertEqual(_safe_corrected_ocr(original, changed_date), original)
+
+    def test_ocr_display_correction_allows_spaces_inserted_inside_dates(self):
+        original = (
+            "학교 내 통합학급 홍보 촬영 활동(2021.06. 22.-202 1.07.14.)에서 "
+            "진행자 역할올 맡아, 명확한 발음과 자연스러운 표정올 구사하여 스크 립트름 읽음."
+        )
+        corrected = (
+            "학교 내 통합학급 홍보 촬영 활동(2021.06.22.-2021.07.14.)에서 "
+            "진행자 역할을 맡아, 명확한 발음과 자연스러운 표정을 구사하여 스크립트를 읽음."
+        )
+        self.assertEqual(_safe_corrected_ocr(original, corrected), corrected)
+
+    def test_ocr_display_correction_rejects_new_hanja(self):
+        original = "진행자 역할올 맡아 스크 립트름 읽음."
+        corrected_with_hanja = "진행자 역할을 맡아 스크립트朗誦."
+        self.assertEqual(_safe_corrected_ocr(original, corrected_with_hanja), original)
+
+    def test_missing_combined_ocr_correction_is_retried_with_focused_request(self):
+        original = (
+            "학교 내 통합학급 홍보 촬영 활동(2021.06. 22.-202 1.07.14.)에서 "
+            "진행자 역할올 맡아, 명확한 발음과 자연스러운 표정올 구사하여 스크 립트름 읽음."
+        )
+        corrected = (
+            "학교 내 통합학급 홍보 촬영 활동(2021.06.22.-2021.07.14.)에서 "
+            "진행자 역할을 맡아, 명확한 발음과 자연스러운 표정을 구사하여 스크립트를 읽음."
+        )
+        selection = RecordSelection(verdicts=[
+            CandidateVerdict(
+                candidate_number=1,
+                relevance=3,
+                text_integrity=1,
+                connection_reason="홍보 촬영의 진행자 경험이 현재 활동과 연결됨",
+            )
+        ])
+        correction = OcrCorrectionBatch(corrections=[
+            OcrCorrection(candidate_number=1, corrected_original=corrected)
+        ])
+        with patch("rag.attachment.get_embeddings", return_value=CountingEmbeddings()), patch(
+            "rag.attachment.ChatOllama"
+        ) as model_class:
+            model = model_class.return_value.with_structured_output.return_value
+            model.invoke.side_effect = [selection, correction]
+            context, matches = prepare_record_context(
+                original,
+                "통합학급 홍보 영상 진행자 활동",
+                return_matches=True,
+            )
+        self.assertEqual(model.invoke.call_count, 2)
+        self.assertEqual(matches[0]["display_original"], corrected)
+        self.assertIn(corrected, context)
+
+    def test_hanja_inserted_by_ocr_correction_is_retried_in_hangul(self):
+        original = "진행자 역할올 맡아 스크 립트름 읽음."
+        corrected = "진행자 역할을 맡아 스크립트를 읽음."
+        selection = RecordSelection(verdicts=[
+            CandidateVerdict(
+                candidate_number=1,
+                relevance=3,
+                text_integrity=1,
+                connection_reason="진행자 경험이 현재 활동과 연결됨",
+            )
+        ])
+        hanja_correction = OcrCorrectionBatch(corrections=[
+            OcrCorrection(candidate_number=1, corrected_original="진행자 역할을 맡아 스크립트朗誦.")
+        ])
+        hangul_correction = OcrCorrectionBatch(corrections=[
+            OcrCorrection(candidate_number=1, corrected_original=corrected)
+        ])
+        with patch("rag.attachment.get_embeddings", return_value=CountingEmbeddings()), patch(
+            "rag.attachment.ChatOllama"
+        ) as model_class:
+            model = model_class.return_value.with_structured_output.return_value
+            model.invoke.side_effect = [selection, hanja_correction, hangul_correction]
+            _, matches = prepare_record_context(
+                original,
+                "진행자 역할과 스크립트 낭독",
+                return_matches=True,
+            )
+        self.assertEqual(model.invoke.call_count, 3)
+        self.assertEqual(matches[0]["display_original"], corrected)
 
     def test_normal_korean_one_syllable_words_and_line_wraps_are_not_corruption(self):
         wrapped = (

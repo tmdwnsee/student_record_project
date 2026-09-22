@@ -5,7 +5,7 @@ from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field, create_model
 
 from config import COLLEGE_GUIDES, MODEL, OLLAMA_BASE_URL
-from rag.attachment import prepare_record_context
+from rag.attachment import prepare_record_context, sanitize_generated_korean
 from rag.criteria import extract_college_criteria
 from rag.retriever import retrieve_college_context, retrieve_curriculum_context
 from storage.vectorstore import load_college_vectorstore, load_curriculum_vectorstore
@@ -22,6 +22,11 @@ ADVISORY_MARKERS = ("추천드립니다", "권합니다", "방향이 좋습니�
 
 def _naturalize_evidence_references(text: str) -> str:
     """내부 근거 번호를 사용자가 읽는 자연스러운 생기부 연결 표현으로 바꿉니다."""
+    text = re.sub(
+        r"기존\s*생기부\s*경험(?:와|과)?\s*\d+\s*의",
+        "기존 생기부의",
+        text,
+    )
     substitutions = (
         (r"(?:과거\s*)?근거\s*\d+\s*(?:번)?\s*에서", "기존 생기부에서는"),
         (r"(?:과거\s*)?근거\s*\d+\s*(?:번)?\s*에\s*나타난", "기존 생기부에 나타난"),
@@ -35,7 +40,35 @@ def _naturalize_evidence_references(text: str) -> str:
         "이 활동과 직접 연결되는 기존 생기부 경험이 없어",
         text,
     )
-    return re.sub(r"\s{2,}", " ", text).strip()
+    text = text.replace("경험와", "경험과")
+    text = re.sub(r"(?:후보|근거)\s*\d+", "기존 생기부 경험", text)
+    return sanitize_generated_korean(re.sub(r"\s{2,}", " ", text).strip())
+
+
+def _connection_reason_is_malformed(text: str) -> bool:
+    return bool(re.search(
+        r"(?:후보|과거\s*근거|근거)\s*\d+|경험와|(?:^|\s)\d+\s+의(?:\s|$)",
+        text,
+    ))
+
+
+def _fallback_connection_reason(university: str, criterion, activity: dict, record_matches: list[dict]) -> str:
+    titles = [
+        sanitize_generated_korean(record_matches[number - 1].get("experience_title", ""))
+        for number in activity.get("past_evidence_numbers", [])
+        if 1 <= number <= len(record_matches)
+    ]
+    titles = [title for title in titles if title]
+    past = (
+        f"기존 생기부에서 확인한 {', '.join(titles[:2])}을 현재 경험과 연결해 "
+        if titles else
+        "현재 자기평가보고서에서 확인되는 경험을 바탕으로 "
+    )
+    title = sanitize_generated_korean(activity.get("title", "다음 학기 보완 활동")) or "다음 학기 보완 활동"
+    return (
+        f"{university}의 {criterion.area} 반영 비율 {criterion.weight}을 고려하여, "
+        f"{past}{title}으로 확장해 보는 것을 추천드립니다."
+    )
 
 
 def _to_advisory_style(text: str) -> str:
@@ -217,7 +250,8 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
          "대신 문맥에 따라 '~해 보는 것을 추천드립니다', '~을 권합니다', '~하는 방향이 좋습니다', '~해 보세요'를 자연스럽게 사용한다. 모든 문장을 같은 종결어미로 반복하지 않는다. "
          "connection_reason에는 해당 희망 대학의 평가영역과 정확한 반영 비율을 먼저 밝히고, 과거 근거 번호의 경험과 현재 자기평가보고서 내용 중 실제로 확인되는 내용을 연결하여 왜 이 활동을 추천하는지 설명한다. "
          "관련 과거 근거가 없으면 없다고 밝히고 현재 경험과 대학 평가기준만으로 추천 이유를 설명한다. 반영 비율을 활동 시간이나 합격 가능성으로 해석하지 않는다. "
-         "모든 필드는 간결하게 쓰되 각 단계의 대상·방법·결과물을 구체적으로 적는다. "
+        "모든 필드는 간결하게 쓰되 각 단계의 대상·방법·결과물을 구체적으로 적는다. "
+        "모든 사용자 표시 문장은 현대 한국어 한글로 작성하고 원문에 없던 한자·중국어·일본어 문자를 넣지 않는다. 후보 번호와 과거 근거 번호는 설명문에 노출하지 않는다. "
          + SECTION_RULES[section_type]),
         ("human", f"희망 대학: {university}\n희망 학과: {department.strip()}\n"
          f"현재: {current_grade}학년 {current_semester}학기\n설계 대상: {target}\n"
@@ -242,10 +276,22 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
             )
         else:
             activity["past_evidence_numbers"] = []
+        for field_name in ("title", "current_experience", "connection_reason", "goal", "department_connection", "success_check"):
+            activity[field_name] = sanitize_generated_korean(activity[field_name])
+        if not activity["title"]:
+            activity["title"] = f"{criterion.area} 보완 활동"
+        if _connection_reason_is_malformed(activity["connection_reason"]):
+            activity["connection_reason"] = _fallback_connection_reason(
+                university, criterion, activity, record_matches
+            )
         for field_name in ("goal", "department_connection", "success_check"):
             activity[field_name] = _to_advisory_style(activity[field_name])
         activity["steps"] = [
-            {**step, "action": _to_advisory_style(step["action"])}
+            {
+                **step,
+                "action": _to_advisory_style(sanitize_generated_korean(step["action"])),
+                "output": sanitize_generated_korean(step["output"]),
+            }
             for step in activity["steps"]
         ]
         if not any(marker in activity["connection_reason"] for marker in ADVISORY_MARKERS):

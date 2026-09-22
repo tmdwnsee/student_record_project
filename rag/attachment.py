@@ -53,6 +53,17 @@ class RecordSelection(BaseModel):
     verdicts: list[CandidateVerdict] = Field(description="후보별 관련성 검증 결과")
 
 
+class OcrCorrection(BaseModel):
+    candidate_number: int = Field(description="보정한 후보 번호")
+    corrected_original: str = Field(
+        description="사실·수치·문장 순서를 유지하고 OCR 철자·조사·단어 내부 공백만 고친 전체 원문"
+    )
+
+
+class OcrCorrectionBatch(BaseModel):
+    corrections: list[OcrCorrection] = Field(description="요청된 모든 후보의 OCR 보정 결과")
+
+
 RECORD_CANDIDATE_COUNT = 12
 RECORD_MIN_SIMILARITY = 0.40
 RECORD_RRF_K = 60
@@ -61,6 +72,18 @@ _ALLOWED_SINGLE_HANGUL = {
     "이", "그", "저", "한", "두", "세", "네", "첫", "각", "및", "더", "새", "전", "후", "내",
     "중", "때", "줄", "수", "또", "데", "서", "게", "지", "할", "말", "풀", "길", "생",
 }
+_FOREIGN_SCRIPT_PATTERN = re.compile(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_FOREIGN_TERM_REPLACEMENTS = {"朗誦": "낭송"}
+
+
+def sanitize_generated_korean(text: str) -> str:
+    """사용자 표시용 생성문에서 원문에 없던 외국 문자를 제거합니다."""
+    cleaned = text
+    for foreign, korean in _FOREIGN_TERM_REPLACEMENTS.items():
+        cleaned = cleaned.replace(foreign, korean)
+    cleaned = _FOREIGN_SCRIPT_PATTERN.sub("", cleaned)
+    cleaned = re.sub(r"\s+([,.:;!?])", r"\1", cleaned)
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
 
 
 def extract_context(filename: str, content: bytes) -> str:
@@ -225,6 +248,8 @@ def _obvious_text_corruption(text: str) -> str:
 
 def _grounded_experience_title(title: str, original: str) -> bool:
     """과거 경험 제목의 핵심 단어가 실제 생기부 후보에 있는지 확인합니다."""
+    if _FOREIGN_SCRIPT_PATTERN.search(title) or re.search(r"(?:후보|근거)\s*\d+", title):
+        return False
     stopwords = {"기존", "경험", "활동", "통한", "관련", "대한", "기반", "함양", "강화"}
     tokens = [
         token for token in re.findall(r"[가-힣A-Za-z]{2,}", title)
@@ -253,11 +278,106 @@ def _safe_corrected_ocr(original: str, corrected: str) -> str:
     corrected_compact = re.sub(r"\s+", "", corrected)
     if not original_compact or not 0.70 <= len(corrected_compact) / len(original_compact) <= 1.30:
         return original
-    if re.findall(r"\d+", original) != re.findall(r"\d+", corrected):
+    original_foreign_chars = set(_FOREIGN_SCRIPT_PATTERN.findall(original))
+    if any(
+        char not in original_foreign_chars
+        for char in _FOREIGN_SCRIPT_PATTERN.findall(corrected)
+    ):
+        return original
+    # OCR이 연도나 날짜 중간에 넣은 공백은 보정할 수 있어야 합니다.
+    # 공백을 제거한 뒤 숫자와 날짜 구분자를 함께 비교하면 `202 1` ->
+    # `2021`은 허용하면서 실제 날짜·수치 변경은 계속 차단할 수 있습니다.
+    numeric_pattern = r"\d+(?:[-./:]\d+)*"
+    original_numbers = re.findall(numeric_pattern, original_compact)
+    corrected_numbers = re.findall(numeric_pattern, corrected_compact)
+    if original_numbers != corrected_numbers:
         return original
     if SequenceMatcher(None, original_compact, corrected_compact).ratio() < 0.55:
         return original
     return corrected
+
+
+def _needs_ocr_correction(text: str) -> bool:
+    """전용 OCR 보정을 재시도할 만큼 명백한 인식 흔적이 있는지 확인합니다."""
+    return bool(
+        re.search(r"(?<=\d)\s+(?=\d)", text)
+        or re.search(r"[가-힣]{3,}(?:올|름|틀)(?=\s|[,.:;!?)]|$)", text)
+        or re.search(r"[가-힣]{1,3}\s+[가-힣]{2,}(?:올|름|틀)(?=\s|[,.:;!?)]|$)", text)
+    )
+
+
+def _retry_ocr_corrections(candidates: list[dict], candidate_numbers: list[int]) -> dict[int, str]:
+    """복합 판단에서 누락된 OCR 보정만 작은 전용 요청으로 다시 수행합니다."""
+    if not candidate_numbers:
+        return {}
+    requested = [
+        (number, candidates[number - 1]["original"])
+        for number in candidate_numbers
+        if 1 <= number <= len(candidates)
+    ]
+    if not requested:
+        return {}
+    correction_model = ChatOllama(
+        model=MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0,
+        reasoning=False,
+        num_ctx=4_096,
+    ).with_structured_output(OcrCorrectionBatch, method="json_schema")
+    candidate_text = "\n\n".join(
+        f"후보 {number}\n원문: {original}" for number, original in requested
+    )
+    base_system_prompt = (
+        "스캔 학교생활기록부의 OCR 오류만 보정한다. 요청된 모든 후보를 정확히 한 번씩 반환한다. "
+        "잘못 인식된 철자와 조사, 단어 내부에 끼어든 공백, 숫자 내부에 끼어든 공백만 고친다. "
+        "원문 전체와 문장 순서를 유지하고 날짜의 숫자, 기간, 활동, 역할, 평가 내용은 절대 바꾸거나 추가·삭제·요약하지 않는다. "
+        "보정문은 현대 한국어 한글로 작성하며 원문에 없던 한자, 중국어, 일본어 문자를 절대 넣지 않는다. "
+        "오류가 없으면 원문을 그대로 반환한다."
+    )
+    try:
+        result = correction_model.invoke([
+            ("system", base_system_prompt),
+            ("human", candidate_text),
+        ])
+    except Exception:
+        return {}
+    if not isinstance(result, OcrCorrectionBatch):
+        return {}
+    allowed = set(candidate_numbers)
+    corrections = {
+        item.candidate_number: item.corrected_original
+        for item in result.corrections
+        if item.candidate_number in allowed
+    }
+    original_by_number = dict(requested)
+    invalid_numbers = [
+        number for number, corrected in corrections.items()
+        if any(
+            char not in set(_FOREIGN_SCRIPT_PATTERN.findall(original_by_number[number]))
+            for char in _FOREIGN_SCRIPT_PATTERN.findall(corrected)
+        )
+    ]
+    if invalid_numbers:
+        retry_text = "\n\n".join(
+            f"후보 {number}\n원문: {original_by_number[number]}\n"
+            f"한자가 들어가 폐기된 보정문: {corrections[number]}"
+            for number in invalid_numbers
+        )
+        try:
+            second_result = correction_model.invoke([
+                ("system", base_system_prompt + " 직전 보정문에 들어간 한자 표현은 뜻에 맞는 한글로 고쳐 다시 반환한다."),
+                ("human", retry_text),
+            ])
+        except Exception:
+            second_result = None
+        if isinstance(second_result, OcrCorrectionBatch):
+            for item in second_result.corrections:
+                if item.candidate_number in invalid_numbers:
+                    corrections[item.candidate_number] = item.corrected_original
+    return {
+        number: corrected for number, corrected in corrections.items()
+        if _safe_corrected_ocr(original_by_number[number], corrected) != original_by_number[number]
+    }
 
 
 def _repair_layout_intrusions(text: str, noise_terms: list[str]) -> tuple[str, bool]:
@@ -403,7 +523,7 @@ def _format_record_context(matches: list[dict]) -> str:
         return "기존 생기부를 검토했으나 관련성과 원문 무결성 검증을 모두 통과한 활동을 찾지 못했습니다."
     return "\n\n".join(
         f"[과거 근거 {index}: 기존 생기부]\n선정 이유: {match['connection_reason']}\n"
-        f"원문:\n{match['original']}"
+        f"원문:\n{match.get('display_original', match['original'])}"
         for index, match in enumerate(matches, 1)
     )
 
@@ -488,6 +608,7 @@ def prepare_record_context(
              "서로 다른 표 행·머리글·페이지가 섞여 활동의 의미를 판단할 수 없거나 대체문자와 비정상적인 단어 배열로 의미가 복원되지 않는 경우만 0으로 평가한다. 자연스럽고 완결되면 2로 평가한다. "
              "연결 이유에는 다음 학기 활동을 다시 제안하지 말고, 원문에서 확인되는 기존 경험의 무엇이 새 초안·희망 학과·선택 활동 구분과 관련되는지만 구체적으로 쓴다. "
              "연결 이유는 '과거 원문에서 확인되는 내용'과 '현재 자기평가보고서와 연결되는 지점'을 별도로 표현한다. 현재 초안에만 있는 활동을 과거 원문에서 수행했다고 쓰지 않는다. "
+             "사용자에게 보이는 제목과 연결 이유에는 후보 번호나 근거 번호를 쓰지 말고, 원문에 없던 한자·중국어·일본어 문자를 넣지 않는다. 현대 한국어 문장으로 자연스럽게 쓴다. "
              "experience_title은 해당 후보 원문에 실제로 있는 내용만 사용한 2~6어절의 구체적인 활동 제목으로 작성한다. 현재 초안에만 있는 공익광고, 윤리 헌장, 클릭베이트 등의 표현이 후보 원문에 없다면 제목에 넣지 않는다. "
              "corrected_original에는 후보 원문 전체를 생략하지 말고 OCR 때문에 잘못 읽힌 명백한 철자와 조사만 문맥에 맞게 고친다. 날짜·수치·활동·평가 내용은 추가, 삭제, 요약하지 않는다. "
              "후보마다 실제 활동의 차이를 드러내고 미래 계획은 넣지 않는다. "
@@ -510,19 +631,44 @@ def prepare_record_context(
         for verdict in selection.verdicts
         if 1 <= verdict.candidate_number <= len(candidates)
     }
+    initial_display = {
+        candidate_number: _safe_corrected_ocr(
+            candidate["original"],
+            verdicts[candidate_number].corrected_original if candidate_number in verdicts else "",
+        )
+        for candidate_number, candidate in enumerate(candidates, 1)
+    }
+    retry_numbers = [
+        candidate_number
+        for candidate_number, candidate in enumerate(candidates, 1)
+        if initial_display[candidate_number] == candidate["original"]
+        and _needs_ocr_correction(candidate["original"])
+    ]
+    retried_corrections = _retry_ocr_corrections(candidates, retry_numbers)
     for candidate_number, candidate in enumerate(candidates, 1):
         verdict = verdicts.get(candidate_number)
-        proposed_title = verdict.experience_title.strip() if verdict else ""
-        display_original = _safe_corrected_ocr(
-            candidate["original"], verdict.corrected_original if verdict else ""
+        proposed_title = sanitize_generated_korean(
+            verdict.experience_title.strip() if verdict else ""
         )
+        display_original = initial_display[candidate_number]
+        if candidate_number in retried_corrections:
+            display_original = _safe_corrected_ocr(
+                candidate["original"], retried_corrections[candidate_number]
+            )
         title_is_grounded = _grounded_experience_title(
             proposed_title, display_original
         )
+        raw_connection_reason = sanitize_generated_korean(
+            verdict.connection_reason.strip() if verdict else ""
+        )
+        malformed_reason = bool(re.search(
+            r"(?:후보|과거\s*근거|근거)\s*\d+|경험와|(?:^|\s)\d+\s+의(?:\s|$)",
+            raw_connection_reason,
+        ))
         connection_reason = (
-            verdict.connection_reason.strip()
-            if verdict and verdict.relevance >= 2 and verdict.connection_reason.strip()
-            else "기존 생기부의 이 경험이 현재 자기평가보고서와 주제 또는 탐구 방법에서 연결되어 검색 근거로 선별되었습니다."
+            raw_connection_reason
+            if verdict and verdict.relevance >= 2 and raw_connection_reason and not malformed_reason
+            else "기존 생기부에서 확인되는 이 경험은 현재 자기평가보고서의 주제 또는 활동 방법과 연결되어 참고 경험으로 선정되었습니다."
         )
         matches.append({
             "experience_title": (
