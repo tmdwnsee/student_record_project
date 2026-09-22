@@ -16,6 +16,12 @@ from rag.attachment import (
     RecordSelection,
     _repair_layout_intrusions,
     _retrieve_record_candidates,
+    _safe_corrected_ocr,
+    _obvious_text_corruption,
+    _grounded_experience_title,
+    _section_ranges,
+    _subject_ranges,
+    clean_record_ocr_text,
     extract_context,
     prepare_record_context,
     split_record,
@@ -64,6 +70,90 @@ class RecordEmbeddings:
 
 
 class RagTests(unittest.TestCase):
+    def test_ocr_display_correction_must_preserve_numbers_and_shape(self):
+        original = "진로적성검사(2022.05.13.)틀 진행하여 미디어 진로름 탄색함."
+        corrected = "진로적성검사(2022.05.13.)를 진행하여 미디어 진로를 탐색함."
+        self.assertEqual(_safe_corrected_ocr(original, corrected), corrected)
+        changed_date = "진로적성검사(2023.05.13.)를 진행하여 미디어 진로를 탐색함."
+        self.assertEqual(_safe_corrected_ocr(original, changed_date), original)
+
+    def test_normal_korean_one_syllable_words_and_line_wraps_are_not_corruption(self):
+        wrapped = (
+            "미디어학과의 진로를 어떻게 탐색해야 할\n"
+            "지 고민하고, 언어와 매체 영역 그 중 관련 지문을 읽을 때 비판적으로 생각함."
+        )
+        self.assertEqual(_obvious_text_corruption(wrapped), "")
+        self.assertTrue(_obvious_text_corruption("창 의 적 체 험 활 동 상 황 표 머리글"))
+
+    def test_current_draft_terms_cannot_become_past_experience_title(self):
+        original = "미디어학과 진로를 탐색하고 사회에 대한 관심과 분석 능력이 필요함을 알게 됨."
+        self.assertFalse(_grounded_experience_title(
+            "공익 미디어 프로젝트 윤리 헌장 제정", original
+        ))
+        self.assertTrue(_grounded_experience_title(
+            "미디어학과 진로 탐색과 사회 분석", original
+        ))
+
+    def test_record_ranges_separate_activity_sections_and_subject(self):
+        record = (
+            "동아리활동\n영화 콘텐츠를 제작함.\n"
+            "세부능력 및 특기사항\n수학\n통계 자료를 비교하고 해석함.\n"
+            "국어\n영화 서사의 표현 방식을 분석함.\n"
+            "진로활동\n직업인을 조사함."
+        )
+        section_ranges = _section_ranges(record, "세부능력특기사항")
+        selected = " ".join(record[start:end] for start, end in section_ranges)
+        self.assertIn("통계 자료", selected)
+        self.assertNotIn("영화 콘텐츠", selected)
+        self.assertNotIn("직업인을 조사", selected)
+        subject_ranges = _subject_ranges(record, "수학")
+        self.assertTrue(subject_ranges)
+        subject_text = " ".join(record[start:end] for start, end in subject_ranges)
+        self.assertIn("통계 자료", subject_text)
+        self.assertNotIn("영화 서사", subject_text)
+
+    def test_activity_name_inside_career_sentence_is_not_a_section_heading(self):
+        record = (
+            "진로활동\n희망분야 기획 및 광고 관리자\n"
+            "동아시아 시민 진로탐색 동아리 활동을 통해 사회 문제를 파악함.\n"
+            "자율활동\n학급회의에 참여함."
+        )
+        ranges = _section_ranges(record, "진로활동")
+        selected = " ".join(record[start:end] for start, end in ranges)
+        self.assertIn("기획 및 광고 관리자", selected)
+        self.assertIn("사회 문제를 파악함", selected)
+        self.assertNotIn("학급회의", selected)
+
+    def test_record_units_support_korean_record_endings_without_periods(self):
+        self.assertEqual(
+            split_record_units("자료를 조사함 결과를 표로 정리함 한계를 성찰함"),
+            ["자료를 조사함", "결과를 표로 정리함", "한계를 성찰함"],
+        )
+
+    def test_record_units_do_not_split_dates_into_fragments(self):
+        text = (
+            "진로적성검사(2022. 05. 13.)를 진행하여 강점과 약점을 분석하고 목표를 설정함. "
+            "미디어 분야의 진로를 탐색함."
+        )
+        units = split_record_units(text)
+        self.assertEqual(len(units), 2)
+        self.assertIn("2022. 05. 13.", units[0])
+        self.assertNotIn("05.", units)
+
+    def test_record_ocr_cleanup_removes_table_noise_but_keeps_activity(self):
+        text = (
+            "강남영상미디어고등학교\n2026년 9월 21일\n반\n번호\n12\n2\n"
+            "진로활동\n희망분야\n미디어학과 진학\n"
+            "사회 문제를 분석하고 해결 방법을 탐구함.\n"
+            "문서확인번호 : 1234 (신청인 : 학생)"
+        )
+        cleaned = clean_record_ocr_text(text)
+        self.assertIn("진로활동", cleaned)
+        self.assertIn("사회 문제를 분석", cleaned)
+        self.assertNotIn("고등학교", cleaned)
+        self.assertNotIn("문서확인번호", cleaned)
+        self.assertNotRegex(cleaned, r"(?m)^12$")
+
     def test_guideline_queries_adapt_to_draft_instead_of_always_using_example_rules(self):
         generic_store = Mock()
         generic_store.similarity_search.return_value = []
@@ -181,6 +271,7 @@ class RagTests(unittest.TestCase):
             text = extract_context("record.pdf", b"fake pdf bytes")
         self.assertEqual(text, "첫 페이지\n둘째 페이지")
         self.assertEqual(process.call_args.kwargs["document_type"], "student_record")
+        self.assertEqual(process.call_args.kwargs["config"].dpi, 300)
 
     def test_whole_record_is_read_and_only_relevant_passages_are_selected(self):
         full_text = "앞부분 " + "가" * 6_000 + " 끝부분 활동"
@@ -227,8 +318,9 @@ class RagTests(unittest.TestCase):
         for match in matches:
             self.assertIn(match["original"], record)
             self.assertIn("similarity_score", match)
-            self.assertNotIn("hit_score", match)
-            self.assertNotIn("mmr_score", match)
+            self.assertIn("query_hit_count", match)
+            self.assertIn("rrf_score", match)
+            self.assertIn("mmr_score", match)
 
     def test_pdf_line_wrap_does_not_cut_a_record_sentence(self):
         record = "데이터 분석 과정에서\n두 자료를 비교하여 결론을 도출함. 다음 활동을 계획함."
@@ -236,7 +328,7 @@ class RagTests(unittest.TestCase):
         self.assertEqual(len(units), 2)
         self.assertEqual(units[0], "데이터 분석 과정에서\n두 자료를 비교하여 결론을 도출함.")
 
-    def test_record_context_rejects_weak_llm_match(self):
+    def test_strong_retrieval_is_not_vetoed_by_weak_llm_rating(self):
         selection = RecordSelection(verdicts=[
             CandidateVerdict(
                 candidate_number=1,
@@ -250,12 +342,13 @@ class RagTests(unittest.TestCase):
         ) as model_class:
             model_class.return_value.with_structured_output.return_value.invoke.return_value = selection
             context, matches = prepare_record_context(
-                "데이터 분석과 무관한 자료 조사 활동을 수행함.",
+                "데이터 분석을 위해 자료 조사 활동을 수행함.",
                 "데이터 분석 활동",
                 return_matches=True,
             )
-        self.assertFalse(matches)
-        self.assertIn("관련성과 원문 무결성 검증을 모두 통과한 활동을 찾지 못했습니다", context)
+        self.assertTrue(matches)
+        self.assertIn("데이터 분석을 위해 자료 조사 활동", context)
+        self.assertNotIn("주제 이름만 비슷하고 직접 관련되는 경험은 없음", context)
 
     def test_record_context_rejects_layout_corrupted_text(self):
         broken = "자료를 선별한 뒤 데이터 저널리즘의 장 미디어 콘텐츠 기초 면 구성을 설계함."

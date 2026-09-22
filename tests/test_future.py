@@ -5,16 +5,43 @@ from langchain_core.documents import Document
 from streamlit.testing.v1 import AppTest
 from config import PROJECT_ROOT
 from ingestion.prepare_documents import annotate_curriculum_documents, normalize_course_key
-from rag.future import ActivityStep, FutureActivity, generate_future_guide, next_semester
+from rag.future import (
+    ActivityStep,
+    FutureActivity,
+    _naturalize_evidence_references,
+    _to_advisory_style,
+    generate_future_guide,
+    next_semester,
+)
 from rag.retriever import retrieve_curriculum_context
 
 
 class FutureTests(unittest.TestCase):
+    def test_internal_evidence_numbers_are_naturalized(self):
+        text = (
+            "과거 근거 1에서 확인한 미디어 탐색과 근거 2에서 수행한 진로검사를 "
+            "현재 탐구로 확장하는 방향이 좋습니다."
+        )
+        result = _naturalize_evidence_references(text)
+        self.assertNotIn("근거 1", result)
+        self.assertNotIn("근거 2", result)
+        self.assertIn("기존 생기부에서는", result)
+
+    def test_future_plan_declarative_tone_is_changed_to_advice(self):
+        result = _to_advisory_style("자료를 수집합니다. 분석의 정확도를 높입니다.")
+        self.assertNotIn("수집합니다", result)
+        self.assertNotIn("높입니다", result)
+        self.assertIn("수집하는 것을 추천드립니다", result)
+        self.assertIn("정확도를 높이는 것을 권합니다", result)
+
     def build_result(self, section="세부능력특기사항", subject="확률과 통계"):
         model = Mock()
-        plan = FutureActivity(title="다음 학기 활동", rationale="초안의 경험을 확장", goal="분석 방법 보완",
-            department_connection="학과의 학습 분야와 연결 제안", success_check="비교 방법과 한계 기록",
-            steps=[ActivityStep(action="동료와 자료를 비교하고 분석 방법을 정리한다.", output="비교표") for _ in range(3)])
+        plan = FutureActivity(title="다음 학기 활동", past_evidence_numbers=[1],
+            current_experience="현재 자기평가보고서의 자료 분석 경험",
+            connection_reason="성균관대학교가 학업역량을 40% 반영하므로 과거 비교 경험과 현재 분석 경험을 확장해 보는 것을 추천드립니다.",
+            goal="분석 방법을 보완해 보는 것을 권합니다.",
+            department_connection="학과의 학습 분야와 연결해 보는 것을 추천드립니다.", success_check="비교 방법과 한계를 기록했는지 확인해 보세요.",
+            steps=[ActivityStep(action="동료와 자료를 비교하고 분석 방법을 정리해 보는 것을 추천드립니다.", output="비교표") for _ in range(3)])
         def structured(schema, **kwargs):
             model.invoke.return_value = schema(**{name: plan for name in schema.model_fields})
             return model
@@ -50,9 +77,12 @@ class FutureTests(unittest.TestCase):
     def test_first_year_first_semester_uses_only_current_draft(self):
         model = Mock()
         plan = FutureActivity(
-            title="다음 학기 활동", rationale="자기평가보고서의 현재 경험을 확장", goal="탐구 과정 보완",
-            department_connection="학과 분야와 연결", success_check="탐구 과정과 결과물 확인",
-            steps=[ActivityStep(action="수업 자료를 비교하고 탐구 과정을 단계별로 기록한다.", output="탐구 기록") for _ in range(3)],
+            title="다음 학기 활동", past_evidence_numbers=[],
+            current_experience="현재 자기평가보고서의 탐구 경험",
+            connection_reason="성균관대학교의 학업역량 40%를 고려해 현재 경험을 다음 학기 탐구로 확장해 보는 것을 추천드립니다.",
+            goal="탐구 과정을 보완해 보는 것을 권합니다.",
+            department_connection="학과 분야와 연결하는 방향이 좋습니다.", success_check="탐구 과정과 결과물을 확인해 보세요.",
+            steps=[ActivityStep(action="수업 자료를 비교하고 탐구 과정을 단계별로 기록해 보는 것을 추천드립니다.", output="탐구 기록") for _ in range(3)],
         )
 
         def structured(schema, **kwargs):
@@ -93,14 +123,18 @@ class FutureTests(unittest.TestCase):
         result, model, context = self.build_result()
         self.assertEqual(model.invoke.call_count, 1)
         prompt = str(model.invoke.call_args.args[0])
-        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "현재 교육과정 참고 자료", "자료를 수집·정리", "성취기준, 단원", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
+        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "현재 교육과정 참고 자료", "자료를 수집·정리", "성취기준, 단원", "~해 보는 것을 추천드립니다", "대학 반영 비율, 과거 생기부 근거, 현재 초안 순서", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
             self.assertIn(text, prompt)
         self.assertEqual(len(result["future_activities"]), 3)
         self.assertEqual([a["weight"] for a in result["future_activities"]], ["40%", "40%", "20%"])
         self.assertNotIn("college_evidence", result)
-        self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 3)
+        self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 5)
         self.assertTrue(context.call_args.kwargs["return_matches"])
         self.assertEqual(context.call_args.kwargs["layout_noise_terms"], ["확률과 통계"])
+        self.assertEqual(context.call_args.kwargs["record_section"], "세부능력특기사항")
+        self.assertEqual(context.call_args.kwargs["subject"], "확률과 통계")
+        self.assertGreaterEqual(len(context.call_args.kwargs["retrieval_queries"]), 4)
+        self.assertEqual(result["future_activities"][0]["past_evidence_numbers"], [1])
 
     def test_curriculum_pages_are_tagged_as_one_course_card(self):
         documents = [
@@ -178,6 +212,9 @@ class FutureTests(unittest.TestCase):
                 self.assertTrue(any("자료 비교·분석 경험" in item.value for item in app.markdown))
                 self.assertTrue(any("기존 생기부 원문" in item.value for item in app.markdown))
                 self.assertTrue(any("기존 활동 원문" in item.value for item in app.markdown))
+                self.assertFalse(any("과거 · 기존 생기부" in item.value for item in app.markdown))
+                self.assertTrue(any("현재 · 자기평가보고서" in item.value for item in app.markdown))
+                self.assertTrue(any("추천 이유 · 대학 평가 기준과 경험 연결" in item.value for item in app.markdown))
                 markdown_values = [item.value for item in app.markdown]
                 record_block = next(
                     value for value in markdown_values

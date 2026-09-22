@@ -6,7 +6,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "curriculum-grounded-guide-v12"
+GUIDE_PIPELINE_VERSION = "clean-record-reference-guide-v18"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
@@ -94,7 +94,10 @@ if result and st.session_state.get("guide_context_key") == context_key:
         with st.container(border=True):
             st.markdown(f"### {item['criterion']} · {item['weight']}")
             st.markdown(f"**{item['title']}**")
-            st.write(item["rationale"])
+            st.markdown("**현재 · 자기평가보고서**")
+            st.write(item["current_experience"])
+            st.markdown("**추천 이유 · 대학 평가 기준과 경험 연결**")
+            st.write(item["connection_reason"])
             a, b = st.columns(2)
             with a:
                 st.markdown("**다음 학기 보완 목표**")
@@ -124,7 +127,9 @@ if result and st.session_state.get("guide_context_key") == context_key:
             if result.get("record_matches"):
                 st.caption("학생이 이미 수행한 주제·탐구 방법·역할 중 다음 학기 활동으로 이어 갈 수 있는 경험을 선별했습니다.")
                 for index, match in enumerate(result["record_matches"], 1):
-                    display_original = " ".join(match["original"].split())
+                    display_original = " ".join(
+                        match.get("display_original", match["original"]).split()
+                    )
                     experience_title = match.get("experience_title", "").strip()
                     if not experience_title:
                         experience_title = display_original[:40] + ("…" if len(display_original) > 40 else "")
@@ -132,6 +137,8 @@ if result and st.session_state.get("guide_context_key") == context_key:
                         '<div class="record-note">PDF 표에서 본문 사이에 끼어든 과목명을 제거해 문장을 복원했습니다.</div>'
                         if match.get("text_was_repaired") else ""
                     )
+                    if match.get("display_original", match["original"]) != match["original"]:
+                        repair_note += '<div class="record-note">스캔 PDF의 명백한 OCR 철자·조사 오류를 문맥에 맞게 보정해 표시했습니다.</div>'
                     st.markdown(
                         f"""
                         <section class="record-item">

@@ -1,5 +1,3 @@
-# Python 3.12 / 대학 모집요강 기반 RAG
-
 # LangChain
 langchain-text-splitters==1.1.2
 langchain-ollama==1.1.0
@@ -21,8 +19,10 @@ pydantic==2.13.5
 streamlit==1.63.0
 
 # PDF / OCR
+pypdf==6.18.1
 pymupdf==1.28.2
 rapidocr-onnxruntime==1.4.4
+easyocr==1.7.2
 pillow==12.3.0
 
 # Numeric

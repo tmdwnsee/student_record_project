@@ -1,4 +1,6 @@
 """학년·학기·활동 구분에 맞춘 다음 학기 대학 맞춤 활동 설계."""
+import re
+
 from langchain_ollama import ChatOllama
 from pydantic import BaseModel, Field, create_model
 
@@ -15,6 +17,55 @@ SECTION_RULES = {
     "자율자치활동": "학급·학교 공동체의 문제 해결, 학생 자치, 의사결정과 역할 수행을 중심으로 설계한다.",
     "진로활동": "희망 학과의 학습 주제·직업을 탐색하고 진로 질문과 성찰을 구체화하는 활동을 설계한다.",
 }
+ADVISORY_MARKERS = ("추천드립니다", "권합니다", "방향이 좋습니다", "해 보세요", "바랍니다")
+
+
+def _naturalize_evidence_references(text: str) -> str:
+    """내부 근거 번호를 사용자가 읽는 자연스러운 생기부 연결 표현으로 바꿉니다."""
+    substitutions = (
+        (r"(?:과거\s*)?근거\s*\d+\s*(?:번)?\s*에서", "기존 생기부에서는"),
+        (r"(?:과거\s*)?근거\s*\d+\s*(?:번)?\s*에\s*나타난", "기존 생기부에 나타난"),
+        (r"(?:과거\s*)?근거\s*\d+\s*(?:번)?\s*의", "기존 생기부의"),
+        (r"\[?(?:과거\s*)?근거\s*\d+\s*(?:번)?\]?", "기존 생기부 경험"),
+    )
+    for pattern, replacement in substitutions:
+        text = re.sub(pattern, replacement, text)
+    text = re.sub(
+        r"과거\s*근거가\s*없(?:어|으므로)",
+        "이 활동과 직접 연결되는 기존 생기부 경험이 없어",
+        text,
+    )
+    return re.sub(r"\s{2,}", " ", text).strip()
+
+
+def _to_advisory_style(text: str) -> str:
+    """미래 계획의 단정형 종결을 내용 손실 없이 제안형으로 바꿉니다."""
+    sentences = [part.strip() for part in re.findall(r"[^.!?]+[.!?]?", text) if part.strip()]
+    rewritten = []
+    endings = ("것을 추천드립니다.", "것을 권합니다.", "방향이 좋습니다.")
+    for index, sentence in enumerate(sentences):
+        if any(marker in sentence for marker in ADVISORY_MARKERS):
+            rewritten.append(sentence if sentence.endswith(('.', '!', '?')) else sentence + ".")
+            continue
+        body = sentence.rstrip(".!? ")
+        ending = endings[index % len(endings)]
+        if body.endswith("합니다"):
+            rewritten.append(body[:-3] + "하는 " + ending)
+        elif body.endswith("됩니다"):
+            rewritten.append(body[:-3] + "되는 " + ending)
+        elif body.endswith("거칩니다"):
+            rewritten.append(body[:-4] + "거쳐 보는 " + ending)
+        elif body.endswith("높입니다"):
+            rewritten.append(body[:-4] + "높이는 " + ending)
+        elif body.endswith("키웁니다"):
+            rewritten.append(body[:-4] + "키워 보는 " + ending)
+        elif body.endswith("세웁니다"):
+            rewritten.append(body[:-4] + "세워 보는 " + ending)
+        elif body.endswith("봅니다"):
+            rewritten.append(body[:-3] + "보는 " + ending)
+        else:
+            rewritten.append(body + ". 이 내용을 다음 학기에 시도해 보세요.")
+    return " ".join(rewritten)
 
 
 def next_semester(grade: int, semester: int) -> str:
@@ -24,17 +75,30 @@ def next_semester(grade: int, semester: int) -> str:
 
 
 class ActivityStep(BaseModel):
-    action: str = Field(min_length=15, description="누구와 무엇을 어떤 방법으로 실행할지 구체적인 한 문장")
+    action: str = Field(
+        min_length=15,
+        description="누구와 무엇을 어떤 방법으로 할지 '~해 보는 것을 추천드립니다', '~을 권합니다' 등의 미래 제안형으로 쓴 한 문장",
+    )
     output: str = Field(min_length=1, description="활동 후 남길 결과물 또는 수행 기록")
 
 
 class FutureActivity(BaseModel):
     title: str = Field(min_length=1, description="선택 활동 구분에 맞는 구체적인 미래 활동 제목")
-    rationale: str = Field(min_length=1, description="제공된 자기평가보고서와 기존 기록에서 확인한 경험을 평가요소와 연결한 추천 이유. 제공되지 않은 과거 사실 추가 금지")
-    goal: str = Field(min_length=1, description="다음 학기에 보완할 목표. 기록 미확인을 역량 부족으로 단정하지 않음")
-    department_connection: str = Field(min_length=1, description="희망 학과 분야와 연결할 제안. 실제 대학 교육과정이나 공식 요구사항 추측 금지")
+    past_evidence_numbers: list[int] = Field(
+        description="이 계획에 실제로 연결한 '과거 근거' 번호. 자기평가보고서 내용은 포함하지 않으며 관련 과거 근거가 없으면 빈 목록"
+    )
+    current_experience: str = Field(
+        min_length=1,
+        description="현재 자기평가보고서에서 확인한 경험만 요약. 기존 생기부와 미래 계획의 내용을 섞지 않음",
+    )
+    connection_reason: str = Field(
+        min_length=1,
+        description="희망 대학의 해당 평가영역과 반영 비율, 관련 과거 근거, 현재 경험을 들어 왜 이 미래 활동을 추천하는지 설명. 제안형 문체 사용",
+    )
+    goal: str = Field(min_length=1, description="다음 학기에 보완할 목표를 추천형으로 제시. 기록 미확인을 역량 부족으로 단정하지 않음")
+    department_connection: str = Field(min_length=1, description="희망 학과 분야와 연결하는 방법을 추천형으로 제시. 실제 대학 교육과정이나 공식 요구사항 추측 금지")
     steps: list[ActivityStep] = Field(min_length=3, max_length=3, description="학기 초 준비, 학기 중 실행, 학기 말 정리·성찰 순서의 3단계")
-    success_check: str = Field(min_length=1, description="학생이 활동 완료와 성장을 확인할 관찰 가능한 기준")
+    success_check: str = Field(min_length=1, description="학생이 활동 완료와 성장을 확인해 보도록 권하는 관찰 가능한 기준")
 
 
 def generate_future_guide(student_draft: str, university: str, department: str, *,
@@ -86,29 +150,51 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
         curriculum_length += len(block) + 2
     curriculum_context = "\n\n".join(curriculum_blocks)
     if uses_previous_record:
+        record_queries = [
+            f"{section_type} {subject} {department.strip()} {student_draft}",
+            *[
+                f"{section_type} {subject} {department.strip()} {criterion.area} "
+                f"{' '.join(criterion.subcriteria)} {criterion.evaluation_question} "
+                f"{' '.join(criterion.evaluation_points)}"
+                for criterion in criteria
+            ],
+        ]
         record_context, record_matches = prepare_record_context(
             previous_record,
-            query,
-            max_selected_chunks=3,
+            student_draft,
+            max_selected_chunks=5,
             return_matches=True,
             layout_noise_terms=[subject] if subject else [],
+            retrieval_queries=record_queries,
+            record_section=section_type,
+            subject=subject,
         )
         experience_instruction = (
-            "과거 경험은 기존 생기부에서 확인된 사실, 현재 경험은 자기평가보고서에 적힌 사실로 구분한다. "
-            "각 계획은 과거 경험의 주제·탐구 방법·역할과 현재 경험을 함께 연결해 미래 활동으로 확장한다. "
-            "추천 이유에는 참고한 과거 경험과 현재 경험을 구분하여 설명한다. "
-            "기존 생기부에서 직접 연결되는 활동을 찾지 못했다면 찾았다고 꾸미지 않는다. "
+            "'과거'는 오직 [과거 근거 N: 기존 생기부]에 있는 사실만 뜻한다. "
+            "'현재'는 오직 [현재 경험: 자기평가보고서]에 있는 사실만 뜻한다. "
+            "'미래'는 아직 하지 않은 다음 학기 계획만 뜻한다. "
+            "past_evidence_numbers에는 해당 계획에 실제로 사용한 과거 근거 번호만 넣고, 현재 경험을 과거 근거로 취급하지 않는다. "
+            "past_evidence_numbers의 번호는 내부 연결에만 사용한다. connection_reason을 포함한 어떤 문장에도 '근거 1', '과거 근거 2'처럼 번호를 노출하지 않는다. "
+            "대신 '기존 생기부에서 확인한 ○○ 활동을 현재의 ○○ 활동으로 확장하는 방향이 좋습니다'처럼 실제 과거 활동과 확장 방향을 자연어로 설명한다. "
+            "기존 생기부에서 직접 연결되는 활동이 없으면 past_evidence_numbers를 빈 목록으로 둔다. "
+            "각 대학 평가영역마다 과거 근거를 독립적으로 검토하고, 하나의 과거 근거가 여러 평가영역에 직접 관련되면 같은 번호를 다시 사용할 수 있다. 억지로 연결하지 않는다. "
+            "각 계획은 가능한 경우 과거 경험의 주제·방법·역할과 현재 경험을 함께 연결해 미래 활동으로 확장한다. "
         )
         record_prompt = f"[과거 경험: 기존 생기부 관련 구간]\n{record_context}\n"
     else:
         record_context, record_matches = "", []
         experience_instruction = (
             "현재 사용자는 1학년 1학기로 기존 생기부가 없다. 과거 생기부 경험을 언급하거나 있다고 가정하지 않는다. "
-            "자기평가보고서에서 확인되는 현재 경험만 출발점으로 삼아 미래 활동을 설계하고, 추천 이유에도 현재 경험만 사용한다. "
+            "모든 past_evidence_numbers는 빈 목록으로 작성한다. 자기평가보고서에서 확인되는 현재 경험만 출발점으로 삼아 미래 활동을 설계한다. "
         )
         record_prompt = ""
     schema = create_model("FutureGuide", **{
-        f"activity_{i}": (FutureActivity, Field(description=f"{c.area} ({c.weight}) 보완 활동"))
+        f"activity_{i}": (FutureActivity, Field(
+            description=(
+                f"{c.area} ({c.weight}) 보완 활동. connection_reason에서 {university}의 "
+                f"{c.area} 반영 비율 {c.weight}와 과거·현재 근거를 들어 추천 이유를 설명"
+            )
+        ))
         for i, c in enumerate(criteria)
     })
     model = ChatOllama(model=MODEL, base_url=OLLAMA_BASE_URL, temperature=0, reasoning=False,
@@ -126,6 +212,11 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
          "참고 자료에 없는 성취기준, 단원, 수업 활동이나 특정 학교의 과목 개설 학기를 사실처럼 만들지 않는다. "
          "입력 과목과 정확히 일치하는 자료가 없으면 특정 단원이나 성취기준을 단정하지 말고 자료에서 확인되는 넓은 교과 개념만 활용한다. "
          "세부능력특기사항이 아닌 활동에서는 교육과정의 개념을 주제 설정에만 참고하고 해당 활동을 교과 수행평가처럼 바꾸지 않는다. "
+         "문체 규칙: current_experience는 현재 사실을 객관적으로 요약하고, goal·department_connection·steps.action·success_check는 아직 하지 않은 미래 제안으로 쓴다. "
+         "미래 제안은 '수행합니다', '작성합니다', '분석합니다'처럼 이미 정해진 행동을 단정하지 않는다. "
+         "대신 문맥에 따라 '~해 보는 것을 추천드립니다', '~을 권합니다', '~하는 방향이 좋습니다', '~해 보세요'를 자연스럽게 사용한다. 모든 문장을 같은 종결어미로 반복하지 않는다. "
+         "connection_reason에는 해당 희망 대학의 평가영역과 정확한 반영 비율을 먼저 밝히고, 과거 근거 번호의 경험과 현재 자기평가보고서 내용 중 실제로 확인되는 내용을 연결하여 왜 이 활동을 추천하는지 설명한다. "
+         "관련 과거 근거가 없으면 없다고 밝히고 현재 경험과 대학 평가기준만으로 추천 이유를 설명한다. 반영 비율을 활동 시간이나 합격 가능성으로 해석하지 않는다. "
          "모든 필드는 간결하게 쓰되 각 단계의 대상·방법·결과물을 구체적으로 적는다. "
          + SECTION_RULES[section_type]),
         ("human", f"희망 대학: {university}\n희망 학과: {department.strip()}\n"
@@ -133,16 +224,41 @@ def generate_future_guide(student_draft: str, university: str, department: str, 
          f"활동 구분: {section_type}\n반영 희망 과목: {subject or '해당 없음'}\n"
          f"[대학 평가 기준]\n{official}\n[현재 경험: 자기평가보고서]\n{student_draft}\n"
          f"{record_prompt}[현재 교육과정 참고 자료]\n{curriculum_context}\n"
-         "평가영역마다 다른 초점의 활동 하나를 계획하고, 모든 활동을 선택한 활동 구분과 다음 학기에 맞춰라. 기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라."),
+         "평가영역마다 다른 초점의 활동 하나를 추천하고, 모든 활동을 선택한 활동 구분과 다음 학기에 맞춰라. "
+         "각 connection_reason에는 이 활동이 필요한 이유를 대학 반영 비율, 과거 생기부 근거, 현재 초안 순서로 설명하라. 기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라."),
     ])
     if not isinstance(generated, schema):
         raise ValueError("활동 계획을 생성하지 못했습니다. 다시 실행해 주세요.")
+    activities = []
+    for index, criterion in enumerate(criteria):
+        activity = getattr(generated, f"activity_{index}").model_dump()
+        if uses_previous_record:
+            activity["past_evidence_numbers"] = list(dict.fromkeys(
+                number for number in activity["past_evidence_numbers"]
+                if 1 <= number <= len(record_matches)
+            ))
+            activity["connection_reason"] = _naturalize_evidence_references(
+                activity["connection_reason"]
+            )
+        else:
+            activity["past_evidence_numbers"] = []
+        for field_name in ("goal", "department_connection", "success_check"):
+            activity[field_name] = _to_advisory_style(activity[field_name])
+        activity["steps"] = [
+            {**step, "action": _to_advisory_style(step["action"])}
+            for step in activity["steps"]
+        ]
+        if not any(marker in activity["connection_reason"] for marker in ADVISORY_MARKERS):
+            activity["connection_reason"] = (
+                activity["connection_reason"].rstrip() + " 따라서 이 활동을 다음 학기에 실천해 보는 것을 추천드립니다."
+            )
+        activities.append({"criterion": criterion.area, "weight": criterion.weight, **activity})
     return {
         "university": university, "department": department.strip(), "target_semester": target,
         "section_type": section_type, "subject": subject,
         "uses_previous_record": uses_previous_record,
         "summary": f"{target} {section_type}{f' · {subject}' if subject else ''} 보완 계획입니다. 아직 수행하지 않은 미래 활동 제안입니다.",
-        "future_activities": [{"criterion": c.area, "weight": c.weight, **getattr(generated, f"activity_{i}").model_dump()} for i, c in enumerate(criteria)],
+        "future_activities": activities,
         "college_criteria": criteria,
         "record_context": record_context, "record_matches": record_matches,
         "curriculum_context": curriculum_context,

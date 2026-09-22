@@ -2,10 +2,10 @@
 
 순서:
 1) pdftotext -layout
-2) 텍스트 품질 검사
-3) PyMuPDF text
-4) PyMuPDF blocks
-5) RapidOCR
+2) PyPDF text
+3) PyMuPDF text / blocks
+4) 각 추출 결과의 텍스트 품질 검사
+5) 한글 문서는 EasyOCR, 부족하면 RapidOCR
 6) Vision hook (선택)
 
 문서별로 페이지 단위 Document를 만든 뒤, 페이지 메타데이터를 보존한 상태로
@@ -56,6 +56,7 @@ class PipelineConfig:
     min_chars: int = 80
     dpi: int = 180
     enable_ocr: bool = True
+    enable_korean_ocr: bool = True
     pymupdf_sort: bool = True
     prefer_pymupdf: bool = False
 
@@ -177,6 +178,28 @@ def extract_pymupdf_text(
     return _clean_text(doc[page_number - 1].get_text("text", sort=sort))
 
 
+def open_pypdf(path: Path):
+    """PyPDF로 문서를 열고, 읽을 수 없으면 다음 파서가 처리하도록 None을 반환합니다."""
+    try:
+        from pypdf import PdfReader
+
+        # BytesIO를 사용하면 Windows에서 PdfReader가 원본 파일 핸들을 오래
+        # 잡고 있어 업로드 임시 파일을 지우지 못하는 문제를 피할 수 있습니다.
+        return PdfReader(BytesIO(path.read_bytes()))
+    except Exception:  # Parser-specific exceptions vary by PDF structure/version.
+        return None
+
+
+def extract_pypdf_text(reader, page_number: int) -> str:
+    """PyPDF로 한 페이지의 텍스트를 추출합니다."""
+    if reader is None:
+        return ""
+    try:
+        return _clean_text(reader.pages[page_number - 1].extract_text() or "")
+    except Exception:  # A malformed page must fall through to the next parser.
+        return ""
+
+
 def extract_pymupdf_blocks(doc: pymupdf.Document, page_number: int) -> str:
     blocks = doc[page_number - 1].get_text("blocks", sort=True)
     parts: list[str] = []
@@ -233,6 +256,90 @@ def rapidocr_text(image_bytes: bytes) -> tuple[str, float]:
     return _clean_text("\n".join(texts)), (sum(scores) / len(scores) if scores else 0.0)
 
 
+@lru_cache(maxsize=1)
+def _get_korean_ocr_engine():
+    try:
+        import easyocr
+    except ImportError as exc:  # pragma: no cover
+        raise RuntimeError("EasyOCR가 설치되어 있지 않습니다. requirements.txt를 설치하세요.") from exc
+    return easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
+
+
+def easyocr_korean_text(image_bytes: bytes) -> tuple[str, float]:
+    """RapidOCR가 한글을 다른 문자로 오인할 때 한국어 모델로 다시 읽습니다."""
+    from PIL import Image
+    import numpy as np
+
+    image = np.array(Image.open(BytesIO(image_bytes)).convert("RGB"))
+    result = _get_korean_ocr_engine().readtext(image, detail=1, paragraph=False)
+    if not result:
+        return "", 0.0
+    ordered = _order_korean_record_ocr(result, image)
+    texts, scores = [], []
+    for row in ordered:
+        if len(row) >= 3:
+            texts.append(str(row[1]))
+            try:
+                scores.append(float(row[2]))
+            except (TypeError, ValueError):
+                pass
+    return _clean_text("\n".join(texts)), (sum(scores) / len(scores) if scores else 0.0)
+
+
+def _horizontal_table_lines(image) -> list[int]:
+    """페이지 폭을 길게 가로지르는 표 선의 y좌표를 찾습니다."""
+    import numpy as np
+
+    grayscale = image.mean(axis=2) if image.ndim == 3 else image
+    dark_counts = (grayscale < 120).sum(axis=1)
+    candidates = np.flatnonzero(dark_counts >= image.shape[1] * 0.45).tolist()
+    groups: list[list[int]] = []
+    for y in candidates:
+        if not groups or y > groups[-1][-1] + 1:
+            groups.append([y])
+        else:
+            groups[-1].append(y)
+    return [round(sum(group) / len(group)) for group in groups]
+
+
+def _order_korean_record_ocr(result: list, image) -> list:
+    """표 가운데 검출된 활동 영역명을 해당 표 행의 시작 위치로 옮깁니다."""
+    section_names = {"자율활동", "자율자치활동", "동아리활동", "진로활동"}
+    horizontal_lines = _horizontal_table_lines(image)
+    sortable = []
+    for original_index, row in enumerate(result):
+        if len(row) < 2 or not row[0]:
+            continue
+        box = row[0]
+        top = min(float(point[1]) for point in box)
+        left = min(float(point[0]) for point in box)
+        center_y = sum(float(point[1]) for point in box) / len(box)
+        compact = re.sub(r"\s+", "", str(row[1]))
+        sort_y = top
+        if compact in section_names:
+            upper_lines = [line for line in horizontal_lines if line < center_y]
+            lower_lines = [line for line in horizontal_lines if line > center_y]
+            if upper_lines and lower_lines:
+                sort_y = max(upper_lines) + 0.01
+                left = -1.0
+        sortable.append((sort_y, left, original_index, row))
+    return [row for _, _, _, row in sorted(sortable)]
+
+
+def _is_korean_document(document_type: str) -> bool:
+    """Return whether the Korean OCR engine should be preferred."""
+    return (
+        document_type in {"student_record", "school_record_guide_2026"}
+        or bool(re.search(r"[\uac00-\ud7a3]", document_type))
+    )
+
+
+def _with_ocr_confidence(report: QualityReport, confidence: float) -> QualityReport:
+    """Use OCR confidence only as a small quality-score tie breaker."""
+    report.score = min(1.0, report.score + min(0.08, max(0.0, confidence) * 0.08))
+    return report
+
+
 def process_pdf(
     pdf_path: str | Path,
     *,
@@ -242,11 +349,7 @@ def process_pdf(
     vision_hook: Optional[VISION_HOOK] = None,
     page_numbers: Optional[Iterable[int]] = None,
 ) -> list[PageResult]:
-    """PDF 전체를 페이지별로 단계적 추출.
-
-    Vision hook은 RapidOCR까지도 품질이 낮은 페이지에서만 호출됩니다.
-    hook signature: hook(image_bytes, metadata) -> text
-    """
+    """Extract every selected page using parser and OCR fallbacks."""
     config = config or PipelineConfig()
     path = Path(pdf_path)
     if not path.exists():
@@ -257,19 +360,19 @@ def process_pdf(
     invalid_pages = [page for page in selected_pages if page < 1 or page > doc.page_count]
     if invalid_pages:
         doc.close()
-        raise ValueError(f"PDF 범위를 벗어난 페이지입니다: {invalid_pages}")
+        raise ValueError(f"PDF page is outside the document range: {invalid_pages}")
+
     first_page = min(selected_pages)
     last_page = max(selected_pages)
     pdftotext_pages = (
         [] if config.prefer_pymupdf
         else _run_pdftotext(path, first_page, last_page)
     )
+    pypdf_reader = None if config.prefer_pymupdf else open_pypdf(path)
     results: list[PageResult] = []
 
     for pno in selected_pages:
         expected_terms = (expected_terms_by_page or {}).get(pno, [])
-
-        # 1) pdftotext -layout
         pdftotext_index = pno - first_page
         text = _clean_text(
             pdftotext_pages[pdftotext_index]
@@ -278,37 +381,58 @@ def process_pdf(
         q = quality_check(text, expected_terms=expected_terms, min_chars=config.min_chars)
         method = "pdftotext-layout"
 
-        # 2) PyMuPDF text
+        # Text PDFs can expose different font maps to different parsers.
+        if not q.ok and not config.prefer_pymupdf:
+            candidate = extract_pypdf_text(pypdf_reader, pno)
+            cq = quality_check(candidate, expected_terms=expected_terms, min_chars=config.min_chars)
+            if cq.score > q.score:
+                text, q, method = candidate, cq, "pypdf-text"
+
         if not q.ok:
             candidate = extract_pymupdf_text(doc, pno, sort=config.pymupdf_sort)
             cq = quality_check(candidate, expected_terms=expected_terms, min_chars=config.min_chars)
             if cq.score > q.score:
                 text, q, method = candidate, cq, "pymupdf-text"
 
-        # 3) PyMuPDF blocks
         if not q.ok:
             candidate = extract_pymupdf_blocks(doc, pno)
             cq = quality_check(candidate, expected_terms=expected_terms, min_chars=config.min_chars)
             if cq.score > q.score:
                 text, q, method = candidate, cq, "pymupdf-blocks"
 
-        # 4) RapidOCR
-        if not q.ok and config.enable_ocr:
+        image_bytes: bytes | None = None
+        korean_document = _is_korean_document(document_type)
+
+        # Prefer EasyOCR's ko+en model for scanned Korean documents.
+        if not q.ok and config.enable_ocr and config.enable_korean_ocr and korean_document:
             image_bytes = render_page(doc, pno, config.dpi)
             try:
+                candidate, ocr_score = easyocr_korean_text(image_bytes)
+                cq = _with_ocr_confidence(
+                    quality_check(candidate, expected_terms=expected_terms, min_chars=40),
+                    ocr_score,
+                )
+                if cq.korean_ratio > q.korean_ratio + 0.10 or cq.score > q.score:
+                    text, q, method = candidate, cq, "easyocr-korean"
+            except RuntimeError:
+                pass
+
+        # Use RapidOCR only when the prior result is still insufficient.
+        if not q.ok and config.enable_ocr:
+            image_bytes = image_bytes or render_page(doc, pno, config.dpi)
+            try:
                 candidate, ocr_score = rapidocr_text(image_bytes)
-                cq = quality_check(candidate, expected_terms=expected_terms, min_chars=40)
-                # OCR 자체 confidence를 품질 점수의 보조 신호로 사용
-                cq.score = max(cq.score, min(1.0, ocr_score))
+                cq = _with_ocr_confidence(
+                    quality_check(candidate, expected_terms=expected_terms, min_chars=40),
+                    ocr_score,
+                )
                 if cq.score > q.score:
                     text, q, method = candidate, cq, "rapidocr"
             except RuntimeError:
-                # 프로덕션에서는 로그를 남기고 Vision hook으로 이어질 수 있게 둠
                 pass
 
-        # 5) Vision 연결 지점
         if not q.ok and vision_hook:
-            image_bytes = render_page(doc, pno, config.dpi)
+            image_bytes = image_bytes or render_page(doc, pno, config.dpi)
             metadata = {
                 "document_type": document_type,
                 "page_number": pno,
@@ -346,7 +470,6 @@ def process_pdf(
 
     doc.close()
     return results
-
 
 def detect_printed_page(text: str, fallback: Optional[int] = None) -> Optional[int]:
     """본문의 '70' 같은 인쇄 페이지 번호를 찾을 때 쓰는 보수적 휴리스틱."""
@@ -396,7 +519,15 @@ def summarize_page_failures(results: Iterable[PageResult]) -> dict:
         "review_pages": sum(not r.quality.ok for r in results),
         "methods": {
             m: sum(r.method == m for r in results)
-            for m in ["pdftotext-layout", "pymupdf-text", "pymupdf-blocks", "rapidocr", "vision"]
+            for m in [
+                "pdftotext-layout",
+                "pypdf-text",
+                "pymupdf-text",
+                "pymupdf-blocks",
+                "easyocr-korean",
+                "rapidocr",
+                "vision",
+            ]
         },
         "worst_pages": [
             {"page": r.page_number, "score": round(r.quality.score, 3), "method": r.method}

@@ -20,7 +20,7 @@ def prepare_documents(
     pdf_path: Path, *, page_numbers: tuple[int, ...] | None = None,
     natural_text_order: bool = False,
 ) -> list[Document]:
-    """지정된 페이지를 pdftotext → PyMuPDF → OCR 순서로 추출합니다."""
+    """지정된 페이지를 pdftotext → PyPDF → PyMuPDF → OCR 순서로 추출합니다."""
     pdf_path = pdf_path.resolve()
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
