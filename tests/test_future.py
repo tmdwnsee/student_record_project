@@ -4,7 +4,9 @@ from unittest.mock import Mock, patch
 from langchain_core.documents import Document
 from streamlit.testing.v1 import AppTest
 from config import PROJECT_ROOT
+from ingestion.prepare_documents import annotate_curriculum_documents, normalize_course_key
 from rag.future import ActivityStep, FutureActivity, generate_future_guide, next_semester
+from rag.retriever import retrieve_curriculum_context
 
 
 class FutureTests(unittest.TestCase):
@@ -21,8 +23,14 @@ class FutureTests(unittest.TestCase):
             page_content="관련 없는 전형 안내\n학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)",
             metadata={"source": "college.pdf", "page": 2},
         )
+        curriculum_document = Document(
+            page_content="확률과 통계에서 자료를 수집·정리하고 결과를 분석하는 통계적 과정을 학습한다.",
+            metadata={"source": "교육과정.pdf", "page": 45, "course_name": "확률과통계", "course_key": "확률과통계"},
+        )
         with patch("rag.future.ChatOllama", return_value=model), patch("rag.future.load_college_vectorstore"), patch(
             "rag.future.retrieve_college_context", return_value=[document]
+        ), patch("rag.future.load_curriculum_vectorstore"), patch(
+            "rag.future.retrieve_curriculum_context", return_value=[curriculum_document]
         ), patch("rag.future.prepare_record_context", return_value=("기존 활동 근거", [{
             "experience_title": "자료 비교·분석 경험",
             "original": "기존 활동\n원문", "connection_reason": "초안의 분석 방법과 관련됨",
@@ -56,9 +64,15 @@ class FutureTests(unittest.TestCase):
             page_content="학업역량(40%)\n탐구역량(40%)\n잠재역량(20%)",
             metadata={"source": "college.pdf", "page": 2},
         )
+        curriculum_document = Document(
+            page_content="수학 교과에서 자료를 분석하고 탐구 과정을 기록한다.",
+            metadata={"source": "교육과정.pdf", "page": 30, "course_name": "공통수학1"},
+        )
         with patch("rag.future.ChatOllama", return_value=model), patch(
             "rag.future.load_college_vectorstore"
         ), patch("rag.future.retrieve_college_context", return_value=[document]), patch(
+            "rag.future.load_curriculum_vectorstore"
+        ), patch("rag.future.retrieve_curriculum_context", return_value=[curriculum_document]), patch(
             "rag.future.prepare_record_context"
         ) as context:
             result = generate_future_guide(
@@ -79,7 +93,7 @@ class FutureTests(unittest.TestCase):
         result, model, context = self.build_result()
         self.assertEqual(model.invoke.call_count, 1)
         prompt = str(model.invoke.call_args.args[0])
-        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
+        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "현재 교육과정 참고 자료", "자료를 수집·정리", "성취기준, 단원", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
             self.assertIn(text, prompt)
         self.assertEqual(len(result["future_activities"]), 3)
         self.assertEqual([a["weight"] for a in result["future_activities"]], ["40%", "40%", "20%"])
@@ -87,6 +101,56 @@ class FutureTests(unittest.TestCase):
         self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 3)
         self.assertTrue(context.call_args.kwargs["return_matches"])
         self.assertEqual(context.call_args.kwargs["layout_noise_terms"], ["확률과 통계"])
+
+    def test_curriculum_pages_are_tagged_as_one_course_card(self):
+        documents = [
+            Document(page_content="과목명\n확률과통계\n이 과목은 어떤 과목인가요?", metadata={"page": 45}),
+            Document(page_content="자료를 수집하고 분석하는 활동", metadata={"page": 46}),
+            Document(page_content="관련 학과 전체 안내", metadata={"page": 47}),
+        ]
+        result = annotate_curriculum_documents(documents)
+        self.assertEqual(normalize_course_key("확률과 통계"), "확률과통계")
+        self.assertEqual(result[0].metadata["course_key"], "확률과통계")
+        self.assertEqual(result[1].metadata["course_key"], "확률과통계")
+        self.assertNotIn("course_key", result[2].metadata)
+
+    def test_exact_subject_retrieval_wins_over_semantic_search(self):
+        store = Mock()
+        store.get.return_value = {
+            "documents": ["두 번째 청크", "첫 번째 청크"],
+            "metadatas": [
+                {"page": 46, "start_index": 0, "course_name": "확률과통계"},
+                {"page": 45, "start_index": 0, "course_name": "확률과통계"},
+            ],
+        }
+        result = retrieve_curriculum_context(
+            store, subject="확률과 통계", department="통계학과", section_type="세부능력특기사항",
+            target_semester="2학년 1학기", student_draft="자료를 분석함",
+        )
+        self.assertEqual([item.page_content for item in result], ["첫 번째 청크", "두 번째 청크"])
+        store.similarity_search.assert_not_called()
+        self.assertEqual(store.get.call_args.kwargs["where"], {"course_key": "확률과통계"})
+
+    def test_activity_without_subject_uses_department_and_draft_in_one_query(self):
+        store = Mock()
+        store.get.return_value = {"documents": [], "metadatas": []}
+        store.similarity_search.return_value = [
+            Document(page_content="매체 표현을 비판적으로 분석함", metadata={"page": 29, "course_name": "매체의사소통"}),
+            Document(page_content="같은 과목의 후속 설명", metadata={"page": 30, "course_name": "매체의사소통"}),
+            Document(page_content="같은 과목의 중복 청크", metadata={"page": 30, "course_name": "매체의사소통"}),
+            Document(page_content="일반 목차", metadata={"page": 3}),
+            Document(page_content="언어 자료의 표현 효과를 탐구함", metadata={"page": 31, "course_name": "언어생활탐구"}),
+        ]
+        result = retrieve_curriculum_context(
+            store, subject="", department="미디어커뮤니케이션학과", section_type="동아리활동",
+            target_semester="2학년 1학기", student_draft="뉴스 매체의 표현 방식을 비교하고 토론함",
+        )
+        self.assertEqual([item.metadata["course_name"] for item in result], [
+            "매체의사소통", "매체의사소통", "언어생활탐구",
+        ])
+        query = store.similarity_search.call_args.args[0]
+        self.assertIn("미디어커뮤니케이션학과", query)
+        self.assertIn("뉴스 매체의 표현 방식", query)
 
     def test_ui_inputs_results_and_invalidation(self):
         result, _, _ = self.build_result()

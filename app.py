@@ -6,7 +6,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "complete-college-question-text-v11"
+GUIDE_PIPELINE_VERSION = "curriculum-grounded-guide-v12"
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
@@ -26,7 +26,7 @@ st.markdown("""<style>
 .record-note {margin:.5rem 0 0;color:#6b7280;font-size:.82rem;line-height:1.6}
 </style>""", unsafe_allow_html=True)
 st.title("🎓 대학 맞춤 미래 활동 가이드")
-st.caption("자기평가보고서와 대학 평가 기준을 바탕으로 다음 학기 보완 활동을 설계합니다. 1학년 2학기부터는 기존 생기부 경험도 함께 반영합니다.")
+st.caption("자기평가보고서, 현재 교육과정과 대학 평가 기준을 바탕으로 다음 학기 보완 활동을 설계합니다. 1학년 2학기부터는 기존 생기부 경험도 함께 반영합니다.")
 
 with st.container(border=True):
     a, b = st.columns(2)
@@ -75,7 +75,7 @@ elif requested:
             st.warning("희망 학과와 자기평가보고서를 입력하고 세특인 경우 과목도 입력하세요.")
     else:
         try:
-            with st.spinner("대학 평가 기준과 입력 경험을 확인하고 다음 학기 활동을 설계하고 있습니다..."):
+            with st.spinner("대학 평가 기준, 현재 교육과정과 입력 경험을 확인하고 다음 학기 활동을 설계하고 있습니다..."):
                 previous_record = extract_context(uploaded.name, content) if uses_previous_record else ""
                 result = generate_future_guide(draft, university, department.strip(), current_grade=grade,
                     current_semester=semester, section_type=section, previous_record=previous_record, subject=subject)

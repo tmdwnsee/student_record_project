@@ -16,10 +16,14 @@ from config import (
     COLLEGE_COLLECTIONS,
     COLLEGE_GUIDE_PAGES,
     COLLEGE_NATURAL_TEXT_ORDER,
+    CURRICULUM_PDF,
+    CURRICULUM_VECTORSTORE,
+    CURRICULUM_COLLECTION,
 )
 
 from ingestion.prepare_documents import (
     prepare_documents,
+    prepare_curriculum_documents,
     split_documents,
 )
 from storage.embeddings import get_embeddings
@@ -168,6 +172,18 @@ def main():
             page_numbers=COLLEGE_GUIDE_PAGES[university],
             natural_text_order=university in COLLEGE_NATURAL_TEXT_ORDER,
         )
+
+    print("\n교육과정")
+    curriculum_documents = prepare_curriculum_documents(CURRICULUM_PDF)
+    print(f"페이지 수: {len(curriculum_documents)}")
+    curriculum_chunks = split_documents(curriculum_documents)
+    print(f"chunk 수: {len(curriculum_chunks)}")
+    sync_vectorstore(
+        chunks=curriculum_chunks,
+        persist_directory=CURRICULUM_VECTORSTORE,
+        collection_name=CURRICULUM_COLLECTION,
+        embedding=embedding,
+    )
 
     print("\nVector Store 갱신 완료")
 

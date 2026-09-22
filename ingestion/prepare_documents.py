@@ -1,6 +1,8 @@
 """PDF 단계별 추출 파이프라인과 RAG 청킹을 연결합니다."""
 
 from pathlib import Path
+import re
+import unicodedata
 
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -43,6 +45,52 @@ def prepare_documents(
         f"검토 필요 페이지: {summary['review_pages']}/{summary['total_pages']}"
     )
     return documents
+
+
+def normalize_course_key(value: str) -> str:
+    """사용자 입력과 PDF 과목명의 공백·기호·로마 숫자 차이를 없앱니다."""
+    normalized = unicodedata.normalize("NFKC", value).lower()
+    return re.sub(r"[^0-9a-z가-힣]", "", normalized)
+
+
+def _course_name_from_page(text: str) -> str:
+    """교육과정 과목 카드의 '과목명' 바로 다음 값을 읽습니다."""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines[:-1]):
+        if re.sub(r"\s+", "", line) != "과목명":
+            continue
+        candidate = lines[index + 1].strip()
+        if 1 <= len(candidate) <= 40 and normalize_course_key(candidate):
+            return candidate
+    return ""
+
+
+def annotate_curriculum_documents(documents: list[Document]) -> list[Document]:
+    """각 과목 카드와 바로 다음 설명 페이지에 동일한 과목 메타데이터를 붙입니다."""
+    annotated: list[Document] = []
+    previous_course = ""
+    previous_page: int | None = None
+    for document in sorted(documents, key=lambda item: int(item.metadata.get("page", -1))):
+        metadata = dict(document.metadata)
+        page = int(metadata.get("page", -1))
+        course_name = _course_name_from_page(document.page_content)
+        if not course_name and previous_course and previous_page is not None and page == previous_page + 1:
+            course_name = previous_course
+        if course_name:
+            metadata["course_name"] = course_name
+            metadata["course_key"] = normalize_course_key(course_name)
+        annotated.append(Document(page_content=document.page_content, metadata=metadata))
+        # 다음 한 페이지만 이어지는 설명으로 간주합니다.
+        previous_course = _course_name_from_page(document.page_content)
+        previous_page = page
+    return annotated
+
+
+def prepare_curriculum_documents(pdf_path: Path) -> list[Document]:
+    """교육과정 전체를 텍스트로 읽고 과목 단위 검색용 메타데이터를 추가합니다."""
+    return annotate_curriculum_documents(
+        prepare_documents(pdf_path, natural_text_order=True)
+    )
 
 
 def split_documents(documents: list[Document]) -> list[Document]:

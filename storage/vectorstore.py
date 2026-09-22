@@ -16,6 +16,8 @@ from config import (
     GUIDELINE_VECTORSTORE,
     COLLEGE_COLLECTION,
     GUIDELINE_COLLECTION,
+    CURRICULUM_VECTORSTORE,
+    CURRICULUM_COLLECTION,
 )
 from storage.embeddings import get_embeddings
 
@@ -76,4 +78,13 @@ def load_guideline_vectorstore():
         GUIDELINE_VECTORSTORE,
         GUIDELINE_COLLECTION,
         embedding,
+    )
+
+
+@lru_cache(maxsize=1)
+def load_curriculum_vectorstore():
+    return _open_store(
+        CURRICULUM_VECTORSTORE,
+        CURRICULUM_COLLECTION,
+        get_embeddings(),
     )

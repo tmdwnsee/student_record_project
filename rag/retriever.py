@@ -6,6 +6,8 @@ import unicodedata
 from langchain_chroma import Chroma
 from langchain_core.documents import Document
 
+from ingestion.prepare_documents import normalize_course_key
+
 COLLEGE_RESULT_COUNT = 8
 COLLEGE_DETAIL_RESULT_COUNT = 5
 GUIDELINE_RESULT_COUNT = 5
@@ -144,6 +146,87 @@ def retrieve_college_context(store: Chroma, student_draft: str, university: str 
             if key not in seen:
                 seen.add(key)
                 results.append(document)
+    return results
+
+
+def retrieve_curriculum_context(
+    store: Chroma,
+    *,
+    subject: str,
+    department: str,
+    section_type: str,
+    target_semester: str,
+    student_draft: str,
+    limit: int = 6,
+) -> list[Document]:
+    """정확한 과목 카드를 우선하고, 없으면 입력 경험과 학과로 의미 검색합니다."""
+    results: list[Document] = []
+    seen: set[tuple] = set()
+
+    def add(document: Document) -> None:
+        key = (
+            str(document.metadata.get("source", "")),
+            document.metadata.get("page"),
+            document.metadata.get("start_index", 0),
+            document.page_content,
+        )
+        if key not in seen:
+            seen.add(key)
+            results.append(document)
+
+    subject_key = normalize_course_key(subject)
+    if subject_key:
+        exact = store.get(
+            where={"course_key": subject_key},
+            include=["documents", "metadatas"],
+        )
+        exact_documents = [
+            Document(page_content=content, metadata=metadata)
+            for content, metadata in zip(exact.get("documents", []), exact.get("metadatas", []))
+        ]
+        exact_documents.sort(key=lambda item: (
+            int(item.metadata.get("page", -1)),
+            int(item.metadata.get("start_index", 0)),
+        ))
+        for document in exact_documents[:limit]:
+            add(document)
+        if results:
+            return results
+
+    # 짧은 자연어 질의가 필드명과 활동 구분까지 섞은 질의보다 과목 의미를 더 잘 보존합니다.
+    query = (
+        f"{department} {student_draft} {subject} "
+        "관련 고등학교 교과 과목 학습 내용"
+    ).strip()
+    semantic_results = store.similarity_search(query, k=limit * 2)
+    best_course_key = next(
+        (str(document.metadata.get("course_key", "")).strip() for document in semantic_results
+         if str(document.metadata.get("course_key", "")).strip()),
+        "",
+    )
+    if best_course_key:
+        exact = store.get(
+            where={"course_key": best_course_key},
+            include=["documents", "metadatas"],
+        )
+        best_course_documents = [
+            Document(page_content=content, metadata=metadata)
+            for content, metadata in zip(exact.get("documents", []), exact.get("metadatas", []))
+        ]
+        best_course_documents.sort(key=lambda item: (
+            int(item.metadata.get("page", -1)), int(item.metadata.get("start_index", 0)),
+        ))
+        return best_course_documents[:limit]
+
+    course_counts: dict[str, int] = {}
+    for document in semantic_results:
+        course_name = str(document.metadata.get("course_name", "")).strip()
+        if not course_name or course_counts.get(course_name, 0) >= 2:
+            continue
+        add(document)
+        course_counts[course_name] = course_counts.get(course_name, 0) + 1
+        if len(results) >= limit:
+            break
     return results
 
 
