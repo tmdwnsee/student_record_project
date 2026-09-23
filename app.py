@@ -6,7 +6,18 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "clean-record-reference-guide-v21"
+GUIDE_PIPELINE_VERSION = "targeted-record-guide-v25"
+
+
+@st.cache_data(show_spinner=False, max_entries=8)
+def extract_uploaded_record(
+    filename: str, content: bytes, record_section: str, pipeline_version: str
+) -> str:
+    """같은 업로드 파일의 OCR 결과를 재사용합니다.
+
+    pipeline_version은 추출 방식이 바뀌었을 때 예전 캐시가 자동으로 무효화되게 합니다.
+    """
+    return extract_context(filename, content, record_section)
 
 st.set_page_config(page_title="대학 맞춤 미래 가이드", page_icon="🎓", layout="wide")
 st.markdown("""<style>
@@ -76,7 +87,12 @@ elif requested:
     else:
         try:
             with st.spinner("대학 평가 기준, 현재 교육과정과 입력 경험을 확인하고 다음 학기 활동을 설계하고 있습니다..."):
-                previous_record = extract_context(uploaded.name, content) if uses_previous_record else ""
+                previous_record = (
+                    extract_uploaded_record(
+                        uploaded.name, content, section, GUIDE_PIPELINE_VERSION
+                    )
+                    if uses_previous_record else ""
+                )
                 result = generate_future_guide(draft, university, department.strip(), current_grade=grade,
                     current_semester=semester, section_type=section, previous_record=previous_record, subject=subject)
             st.session_state["guide_result"] = result

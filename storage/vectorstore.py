@@ -10,12 +10,8 @@ from chromadb.config import Settings
 from langchain_chroma import Chroma
 
 from config import (
-    COLLEGE_VECTORSTORE,
     COLLEGE_VECTORSTORES,
     COLLEGE_COLLECTIONS,
-    GUIDELINE_VECTORSTORE,
-    COLLEGE_COLLECTION,
-    GUIDELINE_COLLECTION,
     CURRICULUM_VECTORSTORE,
     CURRICULUM_COLLECTION,
 )
@@ -58,26 +54,6 @@ def load_college_vectorstore(university: str = "성균관대학교"):
         COLLEGE_VECTORSTORES[university],
         COLLEGE_COLLECTIONS[university],
         get_embeddings(),
-    )
-
-
-@lru_cache(maxsize=1)
-def load_vectorstores():
-    embedding = get_embeddings()
-    return (
-        _open_store(COLLEGE_VECTORSTORE, COLLEGE_COLLECTION, embedding),
-        _open_store(GUIDELINE_VECTORSTORE, GUIDELINE_COLLECTION, embedding),
-    )
-
-
-@lru_cache(maxsize=1)
-def load_guideline_vectorstore():
-    embedding = get_embeddings()
-
-    return _open_store(
-        GUIDELINE_VECTORSTORE,
-        GUIDELINE_COLLECTION,
-        embedding,
     )
 
 

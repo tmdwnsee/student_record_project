@@ -159,9 +159,7 @@ def main():
 
     print("Vector Store 갱신 시작")
 
-    # 현재 앱은 대학 맞춤 활동 가이드만 제공하므로 모집요강 인덱스만 만듭니다.
-    # 작성요령 검증 기능에서 사용하던 GUIDELINE_* 설정은 이전 데이터와의
-    # 호환성을 위해 남겨 두되, 기본 인덱싱 경로에서는 제외합니다.
+    # 등록된 대학별 모집요강의 지정 페이지를 인덱싱합니다.
     for university, pdf_path in COLLEGE_GUIDES.items():
         print(f"\n대학: {university}")
         build_index(

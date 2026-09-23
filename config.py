@@ -19,7 +19,6 @@ UOS_PDF = DATA_DIRECTORY / "서울시립대학교_모집요강.pdf"
 MYONGJI_PDF = DATA_DIRECTORY / "명지대학교_모집요강.pdf"
 KONKUK_PDF = DATA_DIRECTORY / "건국대학교_모집요강.pdf"
 CATHOLIC_PDF = DATA_DIRECTORY / "가톨릭대학교_모집요강.pdf"
-GUIDELINE_PDF = DATA_DIRECTORY / "student_record_rule.pdf"
 CURRICULUM_PDF = DATA_DIRECTORY / "교육과정.pdf"
 
 COLLEGE_GUIDES = {
@@ -55,14 +54,8 @@ COLLEGE_COLLECTIONS = {
     for index, university in enumerate(COLLEGE_GUIDES, start=1)
 }
 
-# 이전 import 경로와 작성요령 관련 코드의 호환성을 유지합니다.
-COLLEGE_PDF = SKKU_PDF
-COLLEGE_VECTORSTORE = COLLEGE_VECTORSTORES["성균관대학교"]
-COLLEGE_COLLECTION = COLLEGE_COLLECTIONS["성균관대학교"]
-GUIDELINE_VECTORSTORE = VECTORSTORE_DIRECTORY / "guideline"
 CURRICULUM_VECTORSTORE = VECTORSTORE_DIRECTORY / "curriculum"
 
-GUIDELINE_COLLECTION = "guideline_collection"
 CURRICULUM_COLLECTION = "curriculum_collection"
 
 EMBEDDING_MODEL = "BAAI/bge-m3"

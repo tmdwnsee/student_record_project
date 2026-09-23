@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
@@ -20,6 +20,7 @@ from rag.attachment import (
     _retrieve_record_candidates,
     _safe_corrected_ocr,
     _obvious_text_corruption,
+    _ocr_correction_suggestions,
     _grounded_experience_title,
     _section_ranges,
     _subject_ranges,
@@ -29,17 +30,7 @@ from rag.attachment import (
     split_record,
     split_record_units,
 )
-from rag.chain import SAMPLE_DRAFT, review_draft
 from rag.criteria import extract_college_criteria
-from rag.retriever import GUIDELINE_CANDIDATES_PER_QUERY, retrieve_guideline_context
-from rag.reviewer import ReviewResult
-from rag.validation import (
-    Evidence,
-    conservative_rewrite,
-    looks_like_record_sentence,
-    select_evidence,
-    validate_evidence,
-)
 from ingestion.build_index import sync_vectorstore
 
 
@@ -72,6 +63,18 @@ class RecordEmbeddings:
 
 
 class RagTests(unittest.TestCase):
+    def test_korean_ocr_suffix_suggestions_preserve_normal_words(self):
+        text = "모두록 납득 시키논 뒤 회장으로 선출 팀. 서울 기록 토론 이름"
+        suggestions = _ocr_correction_suggestions(text)
+        self.assertIn("모두록→모두를", suggestions)
+        self.assertIn("시키논→시키는", suggestions)
+        self.assertIn("선출 팀→선출됨", suggestions)
+        self.assertFalse(any(
+            word in suggestion
+            for word in ("서울", "기록", "토론", "이름")
+            for suggestion in suggestions
+        ))
+
     def test_ocr_display_correction_must_preserve_numbers_and_shape(self):
         original = "진로적성검사(2022.05.13.)틀 진행하여 미디어 진로름 탄색함."
         corrected = "진로적성검사(2022.05.13.)를 진행하여 미디어 진로를 탐색함."
@@ -95,6 +98,21 @@ class RagTests(unittest.TestCase):
         corrected_with_hanja = "진행자 역할을 맡아 스크립트朗誦."
         self.assertEqual(_safe_corrected_ocr(original, corrected_with_hanja), original)
 
+    def test_ocr_display_correction_removes_new_obvious_spacing_errors(self):
+        original = (
+            "모두록 납득 시키논 공약을 통하여 1학기 학급자치회 회장 "
+            "(2021.03.02.-2021.08.16.)으로 선출 팀."
+        )
+        corrected = (
+            "모두를 납득 시키는 공약을 통하여 1 학기 학급자치회 회장 "
+            "(2021.03.02.-2021.08.16.) 으로 선출됨."
+        )
+        self.assertEqual(
+            _safe_corrected_ocr(original, corrected),
+            "모두를 납득시키는 공약을 통하여 1학기 학급자치회 회장 "
+            "(2021.03.02.-2021.08.16.)으로 선출됨.",
+        )
+
     def test_missing_combined_ocr_correction_is_retried_with_focused_request(self):
         original = (
             "학교 내 통합학급 홍보 촬영 활동(2021.06. 22.-202 1.07.14.)에서 "
@@ -104,14 +122,6 @@ class RagTests(unittest.TestCase):
             "학교 내 통합학급 홍보 촬영 활동(2021.06.22.-2021.07.14.)에서 "
             "진행자 역할을 맡아, 명확한 발음과 자연스러운 표정을 구사하여 스크립트를 읽음."
         )
-        selection = RecordSelection(verdicts=[
-            CandidateVerdict(
-                candidate_number=1,
-                relevance=3,
-                text_integrity=1,
-                connection_reason="홍보 촬영의 진행자 경험이 현재 활동과 연결됨",
-            )
-        ])
         correction = OcrCorrectionBatch(corrections=[
             OcrCorrection(candidate_number=1, corrected_original=corrected)
         ])
@@ -119,27 +129,19 @@ class RagTests(unittest.TestCase):
             "rag.attachment.ChatOllama"
         ) as model_class:
             model = model_class.return_value.with_structured_output.return_value
-            model.invoke.side_effect = [selection, correction]
+            model.invoke.side_effect = [correction]
             context, matches = prepare_record_context(
                 original,
                 "통합학급 홍보 영상 진행자 활동",
                 return_matches=True,
             )
-        self.assertEqual(model.invoke.call_count, 2)
+        self.assertEqual(model.invoke.call_count, 1)
         self.assertEqual(matches[0]["display_original"], corrected)
         self.assertIn(corrected, context)
 
     def test_hanja_inserted_by_ocr_correction_is_retried_in_hangul(self):
         original = "진행자 역할올 맡아 스크 립트름 읽음."
         corrected = "진행자 역할을 맡아 스크립트를 읽음."
-        selection = RecordSelection(verdicts=[
-            CandidateVerdict(
-                candidate_number=1,
-                relevance=3,
-                text_integrity=1,
-                connection_reason="진행자 경험이 현재 활동과 연결됨",
-            )
-        ])
         hanja_correction = OcrCorrectionBatch(corrections=[
             OcrCorrection(candidate_number=1, corrected_original="진행자 역할을 맡아 스크립트朗誦.")
         ])
@@ -150,13 +152,13 @@ class RagTests(unittest.TestCase):
             "rag.attachment.ChatOllama"
         ) as model_class:
             model = model_class.return_value.with_structured_output.return_value
-            model.invoke.side_effect = [selection, hanja_correction, hangul_correction]
+            model.invoke.side_effect = [hanja_correction, hangul_correction]
             _, matches = prepare_record_context(
                 original,
                 "진행자 역할과 스크립트 낭독",
                 return_matches=True,
             )
-        self.assertEqual(model.invoke.call_count, 3)
+        self.assertEqual(model.invoke.call_count, 2)
         self.assertEqual(matches[0]["display_original"], corrected)
 
     def test_normal_korean_one_syllable_words_and_line_wraps_are_not_corruption(self):
@@ -236,111 +238,6 @@ class RagTests(unittest.TestCase):
         self.assertNotIn("문서확인번호", cleaned)
         self.assertNotRegex(cleaned, r"(?m)^12$")
 
-    def test_guideline_queries_adapt_to_draft_instead_of_always_using_example_rules(self):
-        generic_store = Mock()
-        generic_store.similarity_search.return_value = []
-        retrieve_guideline_context(generic_store, "수학 문제의 풀이 과정을 비교하고 발표함", "세특")
-        generic_query_count = generic_store.similarity_search.call_count
-        self.assertEqual(generic_query_count, 2)
-
-        research_store = Mock()
-        research_store.similarity_search.return_value = []
-        retrieve_guideline_context(research_store, "연구 결과를 논문으로 작성하고 학회에서 발표함", "세특")
-        self.assertEqual(research_store.similarity_search.call_count, generic_query_count)
-        self.assertEqual(
-            [call.kwargs["k"] for call in research_store.similarity_search.call_args_list],
-            [5, 6],
-        )
-
-    def test_guideline_reranking_metadata_is_available_for_streamlit(self):
-        store = Mock()
-        store.similarity_search.return_value = [
-            Document(
-                page_content="학생의 구체적인 활동내용과 개별적 특성이 드러나야 함",
-                metadata={"source": "student_record_rule.pdf", "page": 23},
-            )
-        ]
-        result = retrieve_guideline_context(store, "탐구 활동을 수행함", "세특")
-        self.assertEqual(len(result), 1)
-        self.assertTrue(result[0].metadata["retrieval_reasons"])
-        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
-
-    def test_guideline_result_shows_the_triggering_original_sentence(self):
-        store = Mock()
-        store.similarity_search.return_value = [
-            Document(
-                page_content="논문을 학회지에 등재하거나 학회에서 발표한 사실은 기재할 수 없음",
-                metadata={"source": "student_record_rule.pdf", "page": 23},
-            )
-        ]
-        draft = "실험을 수행함. 실험 결과를 논문으로 작성하여 학회에서 발표함."
-        result = retrieve_guideline_context(store, draft, "세특")
-        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
-
-    def test_query_hit_without_rule_keywords_is_not_linked_to_draft(self):
-        store = Mock()
-        store.similarity_search.return_value = [
-            Document(
-                page_content="교육지원청 담당 부서에 문의하는 절차",
-                metadata={"source": "student_record_rule.pdf", "page": 25},
-            )
-        ]
-        result = retrieve_guideline_context(store, "논문을 작성하여 학회에서 발표함.", "세특")
-        self.assertTrue(result)
-        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
-
-    def test_unseen_evaluative_sentence_is_connected_semantically(self):
-        store = Mock()
-        store.similarity_search.return_value = [
-            Document(
-                page_content="교사가 직접 관찰한 사실을 기록하고 단순 사실을 과장하거나 부풀리지 않아야 함",
-                metadata={"source": "student_record_rule.pdf", "page": 24},
-            )
-        ]
-        sentence = "한국 현대문학에 대한 완벽한 이해력을 갖추고 다른 학생보다 뛰어난 능력을 보여주었다."
-        result = retrieve_guideline_context(store, sentence, "세특")
-        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
-
-    def test_draft_sentences_are_linked_only_to_their_matching_rule_category(self):
-        store = Mock()
-        store.similarity_search.return_value = [
-            Document(
-                page_content=(
-                    "활동내용에 따른 개별적 특성이 드러나야 함. "
-                    "구체적인 특정 대학명과 상호명은 기재할 수 없음."
-                ),
-                metadata={"source": "student_record_rule.pdf", "page": 23},
-            )
-        ]
-        named = "성균관대학교 진학을 목표로 문학 활동에 참여함."
-        vague = "여러 활동에 매우 성실하게 참여함."
-        result = retrieve_guideline_context(store, f"{named} {vague}", "세특")
-        self.assertEqual(result[0].metadata["guideline_scopes"], ["공통", "세특"])
-
-    def test_ordinary_good_score_does_not_trigger_exam_award_rule(self):
-        store = Mock()
-        store.similarity_search.return_value = []
-        retrieve_guideline_context(store, "모둠원이 좋은 점수를 받을 수 있도록 도와줌.", "세특")
-        queries = [call.args[0] for call in store.similarity_search.call_args_list]
-        self.assertFalse(any("공인어학시험 성적" in query for query in queries))
-
-    def test_revised_text_rejects_guidance_and_evidence(self):
-        self.assertTrue(looks_like_record_sentence("Python으로 데이터를 분석하고 문제 해결 과정을 수행함."))
-        for text in (
-            "탐구역량이 드러나도록 작성할 것.",
-            "대학 평가기준과 반영 비율을 고려해야 함.",
-            "student_record_rule.pdf 근거를 참고함.",
-        ):
-            with self.subTest(text=text):
-                self.assertFalse(looks_like_record_sentence(text))
-        self.assertTrue(looks_like_record_sentence(
-            "Python으로 데이터를 수집하고 시각화하여 논리적 사고력을 기름."
-        ))
-        self.assertEqual(
-            conservative_rewrite("데이터 분석 프로젝트를 진행하며 Python으로 데이터를 분석함."),
-            "데이터 분석 프로젝트에서 Python을 활용해 데이터를 분석함",
-        )
-
     def test_previous_record_text_extraction_and_validation(self):
         self.assertEqual(extract_context("record.txt", "기존 활동".encode("utf-8")), "기존 활동")
         for name, content in (("record.txt", b""), ("record.txt", b"\xff"), ("record.docx", b"x")):
@@ -353,7 +250,7 @@ class RagTests(unittest.TestCase):
             text = extract_context("record.pdf", b"fake pdf bytes")
         self.assertEqual(text, "첫 페이지\n둘째 페이지")
         self.assertEqual(process.call_args.kwargs["document_type"], "student_record")
-        self.assertEqual(process.call_args.kwargs["config"].dpi, 300)
+        self.assertEqual(process.call_args.kwargs["config"].dpi, 220)
 
     def test_whole_record_is_read_and_only_relevant_passages_are_selected(self):
         full_text = "앞부분 " + "가" * 6_000 + " 끝부분 활동"
@@ -455,18 +352,6 @@ class RagTests(unittest.TestCase):
         repaired, changed = _repair_layout_intrusions(broken, ["미디어 콘텐츠 기초"])
         self.assertTrue(changed)
         self.assertEqual(repaired, "데이터 저널리즘의 장면 구성을 설계함.")
-
-    def test_review_draft_uses_selected_record_section(self):
-        with patch("rag.chain.load_guideline_vectorstore", return_value=object()), patch(
-            "rag.chain.retrieve_guideline_context", return_value=[]
-        ) as guideline, patch("rag.chain.generate_review") as generate:
-            review_draft("새 초안", "세특")
-        guideline.assert_called_once_with(guideline.call_args.args[0], "새 초안", "세특")
-        generate.assert_called_once_with(
-            student_draft="새 초안",
-            record_section="세특",
-            guideline_results=[],
-        )
 
     def test_college_criteria_are_extracted_from_source(self):
         document = Document(
@@ -684,25 +569,6 @@ class RagTests(unittest.TestCase):
             self.assertEqual(len(updated.get(include=[])["ids"]), 1)
             self.assertNotEqual(updated.get(include=[])["ids"], original_ids)
             self.assertEqual(embedding.embedded_count, 2)
-
-    def test_evidence_must_match_retrieved_source_page_and_text(self):
-        document = Document(page_content="교사가 직접 관찰한 내용", metadata={"source": "student_record_rule.pdf", "page": 10})
-        valid = Evidence(source="student_record_rule.pdf", page=10, content="직접 관찰한 내용")
-        validate_evidence([valid], [document])
-        for changes in ({"source": "college_table.pdf"}, {"page": 11}, {"content": "없는 근거"}, {"content": " "}):
-            with self.subTest(changes=changes), self.assertRaises(ValueError):
-                validate_evidence([valid.model_copy(update=changes)], [document])
-
-    def test_evidence_selection_rejects_invalid_ids(self):
-        document = Document(page_content="평가표 원문", metadata={"source": "college_table.pdf", "page": 71})
-        evidence = select_evidence([1, 1], [document])
-        self.assertEqual(len(evidence), 1)
-        self.assertEqual(evidence[0].content, document.page_content)
-        self.assertEqual(evidence[0].page, 71)
-        for index in (0, -1, 2):
-            with self.subTest(index=index), self.assertRaises(ValueError):
-                select_evidence([index], [document])
-
 
 if __name__ == "__main__":
     unittest.main()

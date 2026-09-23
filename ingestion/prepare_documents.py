@@ -10,12 +10,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ingestion.pdf_pipeline import PipelineConfig, build_source_documents
 
 
-def _document_type(pdf_path: Path) -> str:
-    if pdf_path.name == "student_record_rule.pdf":
-        return "school_record_guide_2026"
-    return pdf_path.stem
-
-
 def prepare_documents(
     pdf_path: Path, *, page_numbers: tuple[int, ...] | None = None,
     natural_text_order: bool = False,
@@ -25,14 +19,14 @@ def prepare_documents(
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF 파일을 찾을 수 없습니다: {pdf_path}")
 
-    document_type = _document_type(pdf_path)
+    document_type = pdf_path.stem
     documents, summary = build_source_documents(
         pdf_path,
         document_type=document_type,
         # 대학 모집요강의 평가표는 텍스트형입니다. 장식·이미지 페이지 전체에
         # OCR을 실행하지 않아도 되며, 업로드 생기부의 OCR 경로에는 영향이 없습니다.
         config=PipelineConfig(
-            enable_ocr=document_type == "school_record_guide_2026",
+            enable_ocr=False,
             pymupdf_sort=not natural_text_order,
             prefer_pymupdf=natural_text_order,
         ),

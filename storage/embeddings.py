@@ -11,5 +11,7 @@ from config import EMBEDDING_MODEL
 def get_embeddings() -> HuggingFaceEmbeddings:
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
+        # 8GB GPU는 OCR 뒤 Ollama의 9B 모델이 사용합니다. 임베딩 모델까지
+        # 상주시킬 경우 Qwen 일부가 CPU로 밀려 전체 생성이 더 느려집니다.
         model_kwargs={"device": "cpu"},
     )

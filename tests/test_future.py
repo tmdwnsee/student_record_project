@@ -7,7 +7,7 @@ from config import PROJECT_ROOT
 from ingestion.prepare_documents import annotate_curriculum_documents, normalize_course_key
 from rag.future import (
     ActivityStep,
-    FutureActivity,
+    CompactFutureActivity,
     _naturalize_evidence_references,
     _to_advisory_style,
     generate_future_guide,
@@ -46,11 +46,8 @@ class FutureTests(unittest.TestCase):
 
     def build_result(self, section="세부능력특기사항", subject="확률과 통계"):
         model = Mock()
-        plan = FutureActivity(title="다음 학기 활동", past_evidence_numbers=[1],
-            current_experience="현재 자기평가보고서의 자료 분석 경험",
-            connection_reason="성균관대학교가 학업역량을 40% 반영하므로 과거 비교 경험과 현재 분석 경험을 확장해 보는 것을 추천드립니다.",
+        plan = CompactFutureActivity(title="다음 학기 활동",
             goal="분석 방법을 보완해 보는 것을 권합니다.",
-            department_connection="학과의 학습 분야와 연결해 보는 것을 추천드립니다.", success_check="비교 방법과 한계를 기록했는지 확인해 보세요.",
             steps=[ActivityStep(action="동료와 자료를 비교하고 분석 방법을 정리해 보는 것을 추천드립니다.", output="비교표") for _ in range(3)])
         def structured(schema, **kwargs):
             model.invoke.return_value = schema(**{name: plan for name in schema.model_fields})
@@ -86,12 +83,9 @@ class FutureTests(unittest.TestCase):
 
     def test_first_year_first_semester_uses_only_current_draft(self):
         model = Mock()
-        plan = FutureActivity(
-            title="다음 학기 활동", past_evidence_numbers=[],
-            current_experience="현재 자기평가보고서의 탐구 경험",
-            connection_reason="성균관대학교의 학업역량 40%를 고려해 현재 경험을 다음 학기 탐구로 확장해 보는 것을 추천드립니다.",
+        plan = CompactFutureActivity(
+            title="다음 학기 활동",
             goal="탐구 과정을 보완해 보는 것을 권합니다.",
-            department_connection="학과 분야와 연결하는 방향이 좋습니다.", success_check="탐구 과정과 결과물을 확인해 보세요.",
             steps=[ActivityStep(action="수업 자료를 비교하고 탐구 과정을 단계별로 기록해 보는 것을 추천드립니다.", output="탐구 기록") for _ in range(3)],
         )
 
@@ -126,19 +120,19 @@ class FutureTests(unittest.TestCase):
         self.assertEqual(result["record_matches"], [])
         prompt = str(model.invoke.call_args.args[0])
         self.assertIn("[현재 경험: 자기평가보고서]", prompt)
-        self.assertIn("기존 생기부가 없다", prompt)
+        self.assertIn("기존 생기부가 없으므로", prompt)
         self.assertNotIn("[과거 경험: 기존 생기부 관련 구간]", prompt)
 
     def test_subject_and_target_reach_single_generation(self):
         result, model, context = self.build_result()
         self.assertEqual(model.invoke.call_count, 1)
         prompt = str(model.invoke.call_args.args[0])
-        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "현재 교육과정 참고 자료", "자료를 수집·정리", "성취기준, 단원", "~해 보는 것을 추천드립니다", "대학 반영 비율, 과거 생기부 근거, 현재 초안 순서", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
+        for text in ["확률과 통계", "3학년 1학기", "세부능력특기사항", "통계학과", "기존 활동 근거", "현재 교육과정 참고 자료", "자료를 수집·정리", "성취기준, 단원", "~해 보는 것을 추천드립니다", "과거·현재 경험의 주제나 방법", "평가영역마다 다른 초점", "기존 활동과 무관한 활동을 처음부터 새로 제시하지 마라"]:
             self.assertIn(text, prompt)
         self.assertEqual(len(result["future_activities"]), 3)
         self.assertEqual([a["weight"] for a in result["future_activities"]], ["40%", "40%", "20%"])
         self.assertNotIn("college_evidence", result)
-        self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 5)
+        self.assertEqual(context.call_args.kwargs["max_selected_chunks"], 3)
         self.assertTrue(context.call_args.kwargs["return_matches"])
         self.assertEqual(context.call_args.kwargs["layout_noise_terms"], ["확률과 통계"])
         self.assertEqual(context.call_args.kwargs["record_section"], "세부능력특기사항")

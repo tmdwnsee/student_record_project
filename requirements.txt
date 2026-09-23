@@ -6,8 +6,8 @@ langchain-chroma==1.1.0
 
 # Embedding / Transformers
 sentence-transformers==6.0.1
-torch
-torchvision
+torch==2.14.0
+torchvision==0.29.0
 
 # Vector DB
 chromadb==1.5.9

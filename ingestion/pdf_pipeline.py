@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 from functools import lru_cache
 from io import BytesIO
 from pathlib import Path
@@ -262,7 +263,30 @@ def _get_korean_ocr_engine():
         import easyocr
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError("EasyOCR가 설치되어 있지 않습니다. requirements.txt를 설치하세요.") from exc
-    return easyocr.Reader(["ko", "en"], gpu=False, verbose=False)
+    import torch
+
+    use_gpu = False
+    if torch.cuda.is_available():
+        free_bytes, _ = torch.cuda.mem_get_info()
+        # EasyOCR와 페이지 텐서가 사용할 안전 여유를 확보합니다. Ollama가 이미
+        # VRAM을 점유한 경우 CPU로 내려가 시스템 전체의 메모리 압박을 피합니다.
+        use_gpu = free_bytes >= 3 * 1024**3
+    return easyocr.Reader(["ko", "en"], gpu=use_gpu, verbose=False)
+
+
+def release_ocr_engines() -> None:
+    """OCR 뒤 GPU 메모리를 Ollama에 돌려줍니다."""
+    _get_korean_ocr_engine.cache_clear()
+    _get_ocr_engine.cache_clear()
+    try:
+        import gc
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except ImportError:
+        pass
 
 
 def easyocr_korean_text(image_bytes: bytes) -> tuple[str, float]:
@@ -284,6 +308,79 @@ def easyocr_korean_text(image_bytes: bytes) -> tuple[str, float]:
             except (TypeError, ValueError):
                 pass
     return _clean_text("\n".join(texts)), (sum(scores) / len(scores) if scores else 0.0)
+
+
+_RECORD_SECTION_ALIASES = {
+    "세부능력특기사항": ("세부능력및특기사항", "세부능력특기사항"),
+    "자율자치활동": ("자율자치활동", "자율활동"),
+    "동아리활동": ("동아리활동",),
+    "진로활동": ("진로활동",),
+}
+
+
+def locate_student_record_pages(
+    pdf_path: str | Path,
+    record_section: str,
+    *,
+    dpi: int = 110,
+) -> tuple[int, ...] | None:
+    """작은 왼쪽 열만 OCR해 선택한 생기부 영역이 있는 페이지를 찾습니다."""
+    aliases = _RECORD_SECTION_ALIASES.get(record_section)
+    if not aliases:
+        return None
+    document = pymupdf.open(pdf_path)
+    headings_by_page: dict[int, set[str]] = {}
+    reader = _get_korean_ocr_engine()
+    try:
+        from PIL import Image
+        import numpy as np
+
+        for page_number, page in enumerate(document, 1):
+            # 표의 '영역' 열과 활동 제목은 페이지 왼쪽에 있습니다. 본문 전체를
+            # 저해상도로 인식하지 않아 페이지 탐색 비용과 잘못된 본문 매칭을 줄입니다.
+            clip = pymupdf.Rect(0, 0, page.rect.width * 0.42, page.rect.height)
+            scale = dpi / 72.0
+            pixmap = page.get_pixmap(
+                matrix=pymupdf.Matrix(scale, scale), clip=clip, alpha=False
+            )
+            image = np.array(Image.open(BytesIO(pixmap.tobytes("png"))).convert("RGB"))
+            lines = reader.readtext(
+                image,
+                detail=0,
+                paragraph=False,
+                canvas_size=1280,
+                mag_ratio=1.0,
+            )
+            compact_lines = [re.sub(r"\s+", "", str(line)) for line in lines]
+            found: set[str] = set()
+            for section, section_aliases in _RECORD_SECTION_ALIASES.items():
+                if any(
+                    alias in line
+                    or (
+                        2 <= len(line) <= len(alias) + 3
+                        and SequenceMatcher(None, alias, line).ratio() >= 0.68
+                    )
+                    for alias in section_aliases
+                    for line in compact_lines
+                ):
+                    found.add(section)
+            headings_by_page[page_number] = found
+    finally:
+        document.close()
+
+    target_pages = [
+        page for page, headings in headings_by_page.items() if record_section in headings
+    ]
+    if not target_pages:
+        return None
+    start = min(target_pages)
+    later_section_pages = [
+        page
+        for page, headings in headings_by_page.items()
+        if page > start and any(section != record_section for section in headings)
+    ]
+    end = min(later_section_pages) - 1 if later_section_pages else len(headings_by_page)
+    return tuple(range(start, max(start, end) + 1))
 
 
 def _horizontal_table_lines(image) -> list[int]:
