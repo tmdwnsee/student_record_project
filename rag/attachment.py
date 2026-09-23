@@ -107,7 +107,9 @@ def extract_context(filename: str, content: bytes, record_section: str = "") -> 
                     document_type="student_record",
                     # EasyOCR의 기본 입력 크기(긴 변 2,560px)보다 큰 렌더링은 다시
                     # 축소되므로 300 DPI는 시간만 늘고 한글 인식 결과는 거의 같습니다.
-                    config=PipelineConfig(dpi=220),
+                    # A4의 긴 변이 EasyOCR 기본 캔버스 안에 들어오는 해상도입니다.
+                    # 220 DPI보다 픽셀 수를 줄이되 한글 획은 충분히 보존합니다.
+                    config=PipelineConfig(dpi=200),
                     page_numbers=selected_pages,
                 )
                 text = clean_record_ocr_text("\n".join(page.text for page in pages))
@@ -281,10 +283,22 @@ def _grounded_experience_title(title: str, original: str) -> bool:
 
 
 def _fallback_experience_title(original: str, record_section: str) -> str:
+    """원문을 중간에서 자르지 않고 표시용 과거 경험명을 만듭니다."""
     cleaned = re.sub(r"\s+", " ", original).strip()
     cleaned = re.sub(r"^(?:진로활동|자율활동|자율자치활동|동아리활동)\s*", "", cleaned)
-    excerpt = cleaned[:32].rstrip(" ,.")
-    return f"기존 {record_section or '생기부'} 경험 · {excerpt}" + ("…" if len(cleaned) > 32 else "")
+    # 생기부의 `(기초연기) (26시간)`처럼 활동명이 명시된 형식은 그
+    # 이름만 사용합니다. 시간·날짜·학년 표시는 경험명으로 쓰지 않습니다.
+    for value in re.findall(r"\(([^()]*)\)", cleaned):
+        value = re.sub(r"\s+", " ", value).strip(" ,.")
+        if (
+            2 <= len(value) <= 30
+            and re.search(r"[가-힣A-Za-z]", value)
+            and not re.fullmatch(r"\d+(?:\.\d+)*(?:시간|학년|학기)?", value)
+            and not re.search(r"\d{4}[.\-/]\d", value)
+        ):
+            return f"{value} 활동 경험"
+    section_label = record_section or "학교생활기록부"
+    return f"{section_label}에서 수행한 관련 경험"
 
 
 def _safe_corrected_ocr(original: str, corrected: str) -> str:

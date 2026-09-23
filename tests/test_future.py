@@ -9,6 +9,7 @@ from rag.future import (
     ActivityStep,
     CompactFutureActivity,
     _naturalize_evidence_references,
+    _fallback_connection_reason,
     _to_advisory_style,
     generate_future_guide,
     next_semester,
@@ -17,6 +18,17 @@ from rag.retriever import retrieve_curriculum_context
 
 
 class FutureTests(unittest.TestCase):
+    def test_connection_reason_uses_weight_basis_and_reason_without_raw_excerpt(self):
+        criterion = SimpleNamespace(area="탐구역량", weight="40%")
+        activity = {"title": "디지털 미디어 리터러시 심화 탐구", "past_evidence_numbers": [1]}
+        matches = [{"experience_title": "기초연기 활동 경험"}]
+        result = _fallback_connection_reason("성균관대학교", criterion, activity, matches)
+        self.assertIn("희망 대학인 성균관대학교의 탐구역량 반영 비율 40%", result)
+        self.assertIn("기존 생기부에서 확인한 기초연기 활동 경험을 기반으로", result)
+        self.assertIn("필요가 있기 때문에", result)
+        self.assertTrue(result.endswith("확장해 보는 것을 추천드립니다."))
+        self.assertNotIn("…", result)
+
     def test_internal_evidence_numbers_are_naturalized(self):
         text = (
             "과거 근거 1에서 확인한 미디어 탐색과 근거 2에서 수행한 진로검사를 "

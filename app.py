@@ -10,7 +10,7 @@ from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
-GUIDE_PIPELINE_VERSION = "targeted-record-guide-v25"
+GUIDE_PIPELINE_VERSION = "all-grades-record-guide-v26"
 EXPECTED_GENERATION_SECONDS = 68
 
 

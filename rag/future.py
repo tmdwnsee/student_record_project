@@ -59,15 +59,16 @@ def _fallback_connection_reason(university: str, criterion, activity: dict, reco
         if 1 <= number <= len(record_matches)
     ]
     titles = [title for title in titles if title]
-    past = (
-        f"기존 생기부에서 확인한 {', '.join(titles[:2])}을 현재 경험과 연결해 "
-        if titles else
-        "현재 자기평가보고서에서 확인되는 경험을 바탕으로 "
-    )
+    titles = list(dict.fromkeys(titles))
     title = sanitize_generated_korean(activity.get("title", "다음 학기 보완 활동")) or "다음 학기 보완 활동"
+    if titles:
+        basis = f"기존 생기부에서 확인한 {', '.join(titles[:2])}을 기반으로 "
+    else:
+        basis = "현재 자기평가보고서에서 확인한 경험을 기반으로 "
     return (
-        f"{university}의 {criterion.area} 반영 비율 {criterion.weight}을 고려하여, "
-        f"{past}{title}으로 확장해 보는 것을 추천드립니다."
+        f"희망 대학인 {university}의 {criterion.area} 반영 비율 {criterion.weight}을 고려할 때, "
+        f"{basis}{criterion.area} 평가에서 현재 경험의 과정과 결과를 더 분명히 보여줄 필요가 있기 때문에, "
+        f"현재 경험을 ‘{title}’ 방향으로 확장해 보는 것을 추천드립니다."
     )
 
 

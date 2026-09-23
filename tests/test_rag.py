@@ -22,6 +22,7 @@ from rag.attachment import (
     _obvious_text_corruption,
     _ocr_correction_suggestions,
     _grounded_experience_title,
+    _fallback_experience_title,
     _section_ranges,
     _subject_ranges,
     clean_record_ocr_text,
@@ -63,6 +64,17 @@ class RecordEmbeddings:
 
 
 class RagTests(unittest.TestCase):
+    def test_experience_title_does_not_expose_a_truncated_ocr_sentence(self):
+        original = "(기초연기) (26시간) 뮤지컬의 구성요소에 대해 알아보고 배역을 분석함."
+        self.assertEqual(
+            _fallback_experience_title(original, "동아리활동"),
+            "기초연기 활동 경험",
+        )
+        self.assertEqual(
+            _fallback_experience_title("자료를 조사하고 발표함.", "진로활동"),
+            "진로활동에서 수행한 관련 경험",
+        )
+
     def test_korean_ocr_suffix_suggestions_preserve_normal_words(self):
         text = "모두록 납득 시키논 뒤 회장으로 선출 팀. 서울 기록 토론 이름"
         suggestions = _ocr_correction_suggestions(text)
@@ -250,7 +262,7 @@ class RagTests(unittest.TestCase):
             text = extract_context("record.pdf", b"fake pdf bytes")
         self.assertEqual(text, "첫 페이지\n둘째 페이지")
         self.assertEqual(process.call_args.kwargs["document_type"], "student_record")
-        self.assertEqual(process.call_args.kwargs["config"].dpi, 220)
+        self.assertEqual(process.call_args.kwargs["config"].dpi, 200)
 
     def test_whole_record_is_read_and_only_relevant_passages_are_selected(self):
         full_text = "앞부분 " + "가" * 6_000 + " 끝부분 활동"

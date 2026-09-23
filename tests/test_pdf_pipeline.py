@@ -9,6 +9,8 @@ import pymupdf
 
 from ingestion.pdf_pipeline import (
     _order_korean_record_ocr,
+    _pages_for_record_section,
+    _record_sections_in_text,
     _run_pdftotext,
     detect_printed_page,
     page_results_to_documents,
@@ -17,6 +19,36 @@ from ingestion.pdf_pipeline import (
 
 
 class PdfPipelineTests(unittest.TestCase):
+    def test_activity_phrase_in_body_is_not_a_page_heading(self):
+        self.assertEqual(
+            _record_sections_in_text("동아시아 시민 진로탐색 동아리 활동을 통해 사회 문제를 파악함."),
+            set(),
+        )
+        self.assertEqual(_record_sections_in_text("동 아 리 활 동"), {"동아리활동"})
+
+    def test_repeated_activity_sections_across_grades_are_all_selected(self):
+        headings = {
+            1: {"동아리활동"},
+            2: set(),
+            3: {"진로활동"},
+            4: {"동아리활동"},
+            5: set(),
+            6: {"자율자치활동"},
+        }
+        self.assertEqual(
+            _pages_for_record_section(headings, "동아리활동"),
+            (1, 2, 4, 5),
+        )
+
+    def test_repeated_selection_is_generic_for_every_activity_type(self):
+        headings = {
+            1: {"세부능력특기사항"},
+            2: {"진로활동"},
+            3: {"자율자치활동"},
+            4: {"진로활동"},
+        }
+        self.assertEqual(_pages_for_record_section(headings, "진로활동"), (2, 4))
+
     def test_activity_label_is_moved_to_start_of_its_table_row(self):
         import numpy as np
 

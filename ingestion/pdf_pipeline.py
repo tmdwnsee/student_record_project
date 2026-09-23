@@ -318,27 +318,90 @@ _RECORD_SECTION_ALIASES = {
 }
 
 
+def _record_sections_in_text(text: str) -> set[str]:
+    """텍스트/저해상도 OCR에서 생기부 활동 영역 표제를 찾습니다."""
+    compact_lines = [
+        re.sub(r"\s+", "", str(line))
+        for line in text.splitlines()
+        if str(line).strip()
+    ]
+    # PDF 텍스트 레이어가 세로 표제를 글자별 행으로 흩어 놓는 경우만
+    # 짧은 행을 이어 봅니다. 본문의 `동아리 활동을 통해` 같은 표현은
+    # 활동 영역 표제로 오인하지 않습니다.
+    vertical_labels = "".join(line for line in compact_lines if len(line) <= 2)
+    found: set[str] = set()
+    for section, aliases in _RECORD_SECTION_ALIASES.items():
+        if any(alias in vertical_labels for alias in aliases):
+            found.add(section)
+            continue
+        if any(
+            2 <= len(line) <= len(alias) + 3
+            and (
+                alias in line
+                or SequenceMatcher(None, alias, line).ratio() >= 0.68
+            )
+            for alias in aliases
+            for line in compact_lines
+        ):
+            found.add(section)
+    return found
+
+
+def _pages_for_record_section(
+    headings_by_page: dict[int, set[str]], record_section: str,
+) -> tuple[int, ...] | None:
+    """학년마다 반복되는 활동 영역과 그 연속 페이지를 모두 반환합니다."""
+    selected: set[int] = set()
+    inside_target_section = False
+    for page_number in sorted(headings_by_page):
+        headings = headings_by_page[page_number]
+        if record_section in headings:
+            selected.add(page_number)
+            # 한 페이지에 여러 영역 표제가 함께 있으면 다음 페이지의 소속을
+            # 확정할 수 없으므로 그 페이지만 포함합니다.
+            inside_target_section = headings == {record_section}
+        elif headings:
+            inside_target_section = False
+        elif inside_target_section:
+            selected.add(page_number)
+    return tuple(sorted(selected)) or None
+
+
 def locate_student_record_pages(
     pdf_path: str | Path,
     record_section: str,
     *,
     dpi: int = 110,
 ) -> tuple[int, ...] | None:
-    """작은 왼쪽 열만 OCR해 선택한 생기부 영역이 있는 페이지를 찾습니다."""
+    """모든 학년에서 선택 영역이 있는 페이지를 빠르게 찾아냅니다."""
     aliases = _RECORD_SECTION_ALIASES.get(record_section)
     if not aliases:
         return None
     document = pymupdf.open(pdf_path)
     headings_by_page: dict[int, set[str]] = {}
-    reader = _get_korean_ocr_engine()
+    reader = None
     try:
         from PIL import Image
         import numpy as np
 
         for page_number, page in enumerate(document, 1):
+            clip = pymupdf.Rect(0, 0, page.rect.width * 0.42, page.rect.height)
+            # 텍스트 레이어가 있으면 페이지 전체를 읽어 표의 좌표 오차로
+            # 왼쪽 열 글자가 빠지는 일을 막습니다. 이미지 렌더링보다 훨씬 빠릅니다.
+            native_text = page.get_text("text", sort=True)
+            native_headings = _record_sections_in_text(native_text)
+            readable_korean = len(re.findall(r"[가-힣]", native_text)) >= 20
+            if native_headings or readable_korean:
+                # 텍스트 PDF는 OCR 모델을 거치지 않아도 정확하고 훨씬 빠릅니다.
+                headings_by_page[page_number] = native_headings
+                continue
+
             # 표의 '영역' 열과 활동 제목은 페이지 왼쪽에 있습니다. 본문 전체를
             # 저해상도로 인식하지 않아 페이지 탐색 비용과 잘못된 본문 매칭을 줄입니다.
-            clip = pymupdf.Rect(0, 0, page.rect.width * 0.42, page.rect.height)
+            if reader is None:
+                # 읽을 수 있는 텍스트 PDF에서는 무거운 OCR 모델을 아예
+                # 초기화하지 않습니다. 스캔 페이지가 있을 때만 한 번 로드합니다.
+                reader = _get_korean_ocr_engine()
             scale = dpi / 72.0
             pixmap = page.get_pixmap(
                 matrix=pymupdf.Matrix(scale, scale), clip=clip, alpha=False
@@ -351,36 +414,13 @@ def locate_student_record_pages(
                 canvas_size=1280,
                 mag_ratio=1.0,
             )
-            compact_lines = [re.sub(r"\s+", "", str(line)) for line in lines]
-            found: set[str] = set()
-            for section, section_aliases in _RECORD_SECTION_ALIASES.items():
-                if any(
-                    alias in line
-                    or (
-                        2 <= len(line) <= len(alias) + 3
-                        and SequenceMatcher(None, alias, line).ratio() >= 0.68
-                    )
-                    for alias in section_aliases
-                    for line in compact_lines
-                ):
-                    found.add(section)
-            headings_by_page[page_number] = found
+            headings_by_page[page_number] = _record_sections_in_text(
+                "\n".join(str(line) for line in lines)
+            )
     finally:
         document.close()
 
-    target_pages = [
-        page for page, headings in headings_by_page.items() if record_section in headings
-    ]
-    if not target_pages:
-        return None
-    start = min(target_pages)
-    later_section_pages = [
-        page
-        for page, headings in headings_by_page.items()
-        if page > start and any(section != record_section for section in headings)
-    ]
-    end = min(later_section_pages) - 1 if later_section_pages else len(headings_by_page)
-    return tuple(range(start, max(start, end) + 1))
+    return _pages_for_record_section(headings_by_page, record_section)
 
 
 def _horizontal_table_lines(image) -> list[int]:
