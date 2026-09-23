@@ -1,12 +1,17 @@
 """대학 맞춤 다음 학기 활동 가이드 화면."""
 import hashlib
 import html
+import queue
+import threading
+import time
 import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
 
 GUIDE_PIPELINE_VERSION = "targeted-record-guide-v25"
+EXPECTED_GENERATION_SECONDS = 68
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -86,15 +91,51 @@ elif requested:
             st.warning("희망 학과와 자기평가보고서를 입력하고 세특인 경우 과목도 입력하세요.")
     else:
         try:
-            with st.spinner("대학 평가 기준, 현재 교육과정과 입력 경험을 확인하고 다음 학기 활동을 설계하고 있습니다..."):
-                previous_record = (
-                    extract_uploaded_record(
-                        uploaded.name, content, section, GUIDE_PIPELINE_VERSION
+            outcome = queue.Queue(maxsize=1)
+
+            def generate_in_background():
+                try:
+                    previous_record = (
+                        extract_uploaded_record(
+                            uploaded.name, content, section, GUIDE_PIPELINE_VERSION
+                        )
+                        if uses_previous_record else ""
                     )
-                    if uses_previous_record else ""
-                )
-                result = generate_future_guide(draft, university, department.strip(), current_grade=grade,
-                    current_semester=semester, section_type=section, previous_record=previous_record, subject=subject)
+                    generated = generate_future_guide(
+                        draft, university, department.strip(), current_grade=grade,
+                        current_semester=semester, section_type=section,
+                        previous_record=previous_record, subject=subject,
+                    )
+                    outcome.put((generated, None))
+                except Exception as background_error:
+                    outcome.put((None, background_error))
+
+            worker = threading.Thread(target=generate_in_background, daemon=True)
+            add_script_run_ctx(worker, get_script_run_ctx())
+            worker.start()
+
+            countdown = st.empty()
+            progress = st.progress(0, text="자료를 분석하고 있습니다.")
+            started_at = time.monotonic()
+            while worker.is_alive():
+                elapsed = int(time.monotonic() - started_at)
+                remaining = max(0, EXPECTED_GENERATION_SECONDS - elapsed)
+                if remaining:
+                    countdown.info(f"⏱️ 약 {remaining}초 남음")
+                    progress.progress(
+                        min(elapsed / EXPECTED_GENERATION_SECONDS, 0.99),
+                        text="생기부·모집요강·교육과정을 분석하고 활동 가이드를 작성하고 있습니다.",
+                    )
+                else:
+                    countdown.info("⏱️ 예상 시간을 넘겨 결과를 마무리하고 있습니다.")
+                    progress.progress(0.99, text="최종 결과를 검증하고 있습니다.")
+                time.sleep(1)
+
+            result, background_error = outcome.get()
+            if background_error:
+                raise background_error
+            progress.progress(1.0, text="활동 가이드 생성이 완료되었습니다.")
+            countdown.success(f"✅ 약 {int(time.monotonic() - started_at)}초 만에 완료")
             st.session_state["guide_result"] = result
             st.session_state["guide_context_key"] = context_key
         except Exception as error:
