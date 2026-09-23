@@ -9,9 +9,10 @@ from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ct
 from config import COLLEGE_GUIDES
 from rag.attachment import extract_context
 from rag.future import ACTIVITY_SECTIONS, generate_future_guide, next_semester
+from storage.embeddings import warm_up_embeddings
 
-GUIDE_PIPELINE_VERSION = "all-grades-record-guide-v26"
-EXPECTED_GENERATION_SECONDS = 68
+GUIDE_PIPELINE_VERSION = "university-specific-reasons-v28"
+EXPECTED_GENERATION_SECONDS = 58
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -50,6 +51,9 @@ with st.container(border=True):
         university = st.selectbox("희망 대학교", list(COLLEGE_GUIDES), key="guide_university")
     with b:
         department = st.text_input("희망 학과", placeholder="예: 미디어커뮤니케이션학과", key="guide_department")
+    if department.strip():
+        # 입력을 마친 뒤 생성 버튼을 누르기 전의 대기 시간을 활용합니다.
+        warm_up_embeddings()
     a, b = st.columns(2)
     with a:
         grade = st.selectbox("현재 학년", [1, 2], format_func=lambda value: f"{value}학년", key="guide_grade")

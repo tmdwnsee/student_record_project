@@ -52,6 +52,83 @@ def _connection_reason_is_malformed(text: str) -> bool:
     ))
 
 
+def _korean_particle(phrase: str, consonant: str, vowel: str) -> str:
+    """마지막 한글 음절의 받침 여부에 맞는 조사를 반환합니다."""
+    hangul = re.findall(r"[가-힣]", phrase)
+    if not hangul:
+        return vowel
+    return consonant if (ord(hangul[-1]) - ord("가")) % 28 else vowel
+
+
+_AREA_REASON_FOCUS = {
+    "학업역량": "학습 과정에서 활용한 개념, 판단 근거와 확인 가능한 성취",
+    "탐구역량": "탐구 질문이 조사·분석을 거쳐 새로운 관점으로 확장되는 과정",
+    "잠재역량": "스스로 맡은 역할, 협업 방식과 활동 전후의 변화",
+    "사회역량": "공동체를 위해 맡은 역할과 구성원과 협력·소통한 과정",
+    "전공적합성": "전공 관심이 생긴 계기와 관련 학습·진로 탐색 노력",
+    "인성 및 사회성": "책임을 다한 행동과 구성원과 협력·소통한 방식",
+    "진로역량": "전공 관련 교과의 성취와 진로 탐색 경험의 연결",
+    "자기주도역량": "스스로 선택하고 실행한 과정과 관심 분야의 확장",
+    "공동체역량": "협업에서 맡은 역할과 나눔·배려·책임을 실천한 행동",
+    "성장역량": "스스로 도전하고 문제를 해결하며 경험을 확장한 과정",
+}
+
+
+def _criterion_specific_reason(criterion) -> str:
+    """해당 대학 모집요강의 세부 평가요소를 우선해 보완 이유를 만듭니다."""
+    shown = [
+        sanitize_generated_korean(value)
+        for value in getattr(criterion, "draft_evidence", [])
+        if sanitize_generated_korean(value)
+    ][:2]
+    missing = [
+        sanitize_generated_korean(value)
+        for value in getattr(criterion, "missing_aspects", [])
+        if sanitize_generated_korean(value)
+    ][:2]
+    shown_text = " 및 ".join(shown)
+    missing_text = " 및 ".join(missing)
+    official_items = [
+        sanitize_generated_korean(value)
+        for value in getattr(criterion, "subcriteria", [])
+        if sanitize_generated_korean(value)
+    ][:2]
+    if not official_items:
+        official_items = [
+            sanitize_generated_korean(value)
+            for value in getattr(criterion, "evaluation_points", [])
+            if sanitize_generated_korean(value)
+        ][:1]
+    official_text = " · ".join(official_items)
+    official_basis = (
+        f"해당 대학의 세부 평가요소인 ‘{official_text}’"
+        if official_text else
+        f"해당 대학의 {criterion.area} 평가"
+    )
+    if shown_text and missing_text:
+        return (
+            f"현재 기록에서는 {shown_text}{_korean_particle(shown_text, '은', '는')} 확인되지만, "
+            f"{official_basis}{_korean_particle(official_basis, '을', '를')} 뒷받침할 "
+            f"{missing_text}{_korean_particle(missing_text, '이', '가')} 충분히 드러나지 않아 "
+            "이를 보완할 필요가 있기 때문에"
+        )
+    if missing_text:
+        return (
+            f"현재 기록만으로는 {official_basis}{_korean_particle(official_basis, '을', '를')} 뒷받침할 "
+            f"{missing_text}{_korean_particle(missing_text, '을', '를')} "
+            "구체적으로 확인하기 어려워 이를 보완할 필요가 있기 때문에"
+        )
+
+    focus = sanitize_generated_korean(
+        getattr(criterion, "revision_direction", "")
+    ) or _AREA_REASON_FOCUS.get(criterion.area, "활동의 구체적인 과정과 결과")
+    return (
+        f"현재 기록에서 {official_basis}{_korean_particle(official_basis, '을', '를')} 뒷받침할 "
+        f"{focus}{_korean_particle(focus, '을', '를')} "
+        "더 구체적으로 보여줄 필요가 있기 때문에"
+    )
+
+
 def _fallback_connection_reason(university: str, criterion, activity: dict, record_matches: list[dict]) -> str:
     titles = [
         sanitize_generated_korean(record_matches[number - 1].get("experience_title", ""))
@@ -62,12 +139,17 @@ def _fallback_connection_reason(university: str, criterion, activity: dict, reco
     titles = list(dict.fromkeys(titles))
     title = sanitize_generated_korean(activity.get("title", "다음 학기 보완 활동")) or "다음 학기 보완 활동"
     if titles:
-        basis = f"기존 생기부에서 확인한 {', '.join(titles[:2])}을 기반으로 "
+        past = " 및 ".join(titles[:2])
+        basis = (
+            f"기존 생기부에서 확인한 {past}"
+            f"{_korean_particle(past, '을', '를')} 기반으로 "
+        )
     else:
         basis = "현재 자기평가보고서에서 확인한 경험을 기반으로 "
+    specific_reason = _criterion_specific_reason(criterion)
     return (
-        f"희망 대학인 {university}의 {criterion.area} 반영 비율 {criterion.weight}을 고려할 때, "
-        f"{basis}{criterion.area} 평가에서 현재 경험의 과정과 결과를 더 분명히 보여줄 필요가 있기 때문에, "
+        f"희망 대학인 {university}의 {criterion.area} 반영 비율이 {criterion.weight}인 점을 고려할 때, "
+        f"{basis}{specific_reason}, "
         f"현재 경험을 ‘{title}’ 방향으로 확장해 보는 것을 추천드립니다."
     )
 

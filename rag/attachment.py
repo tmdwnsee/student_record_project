@@ -679,7 +679,14 @@ def prepare_record_context(
 
     # 후보 선별은 코드에서 끝났습니다. LLM에게 관련성을 다시 평가시키지 않고,
     # 사용자에게 표시할 선택 문장의 명백한 OCR 오류만 한 번에 보정합니다.
-    candidate_numbers = list(range(1, len(candidates) + 1))
+    # 깨끗한 텍스트 PDF까지 9B 모델로 다시 베껴 쓰게 하면 원문 변형 위험과
+    # 수십 초의 지연만 늘어납니다. 숫자 내부 공백, 조사/어미 혼동처럼 실제
+    # OCR 흔적이 발견된 후보만 보정 모델에 보냅니다.
+    candidate_numbers = [
+        number
+        for number, candidate in enumerate(candidates, 1)
+        if _needs_ocr_correction(candidate["original"])
+    ]
     corrections = _retry_ocr_corrections(candidates, candidate_numbers)
     matches = []
     for candidate_number, candidate in enumerate(candidates, 1):

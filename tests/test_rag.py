@@ -151,6 +151,18 @@ class RagTests(unittest.TestCase):
         self.assertEqual(matches[0]["display_original"], corrected)
         self.assertIn(corrected, context)
 
+    def test_clean_record_skips_the_extra_ocr_language_model_call(self):
+        with patch("rag.attachment.get_embeddings", return_value=CountingEmbeddings()), patch(
+            "rag.attachment.ChatOllama"
+        ) as model_class:
+            _, matches = prepare_record_context(
+                "신문 기사와 공공 자료를 비교하여 미디어 표현 방식을 분석함.",
+                "미디어 자료 비교 분석",
+                return_matches=True,
+            )
+        self.assertTrue(matches)
+        model_class.assert_not_called()
+
     def test_hanja_inserted_by_ocr_correction_is_retried_in_hangul(self):
         original = "진행자 역할올 맡아 스크 립트름 읽음."
         corrected = "진행자 역할을 맡아 스크립트를 읽음."
@@ -270,7 +282,7 @@ class RagTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertIn("끝부분 활동", chunks[-1])
 
-    def test_record_context_uses_embedding_search_and_llm_validation(self):
+    def test_record_context_uses_embedding_search_without_clean_text_rewrite(self):
         record = (
             "관련 없는 수상 내용. 데이터 분석 프로젝트를 시작함. "
             "공공 자료 두 종류를 비교함. 분석의 한계를 기록함. 관련 없는 봉사 내용."
@@ -300,7 +312,7 @@ class RagTests(unittest.TestCase):
             model = model_class.return_value.with_structured_output.return_value
             model.invoke.return_value = selection
             context, matches = prepare_record_context(record, query, return_matches=True)
-        self.assertEqual(model.invoke.call_count, 1)
+        self.assertEqual(model.invoke.call_count, 0)
         self.assertTrue(matches)
         self.assertIn("데이터 분석 프로젝트를 시작함.", context)
         self.assertIn("공공 자료 두 종류를 비교함.", context)

@@ -19,15 +19,68 @@ from rag.retriever import retrieve_curriculum_context
 
 class FutureTests(unittest.TestCase):
     def test_connection_reason_uses_weight_basis_and_reason_without_raw_excerpt(self):
-        criterion = SimpleNamespace(area="탐구역량", weight="40%")
+        criterion = SimpleNamespace(
+            area="탐구역량", weight="40%",
+            subcriteria=["탐구확장성", "탐구주도성"],
+            evaluation_points=[],
+            draft_evidence=["관심 분야의 탐구 과정"],
+            missing_aspects=["탐구 범위의 확장"],
+            revision_direction="호기심이 생긴 계기, 조사·분석 방법과 탐구가 확장된 과정",
+        )
         activity = {"title": "디지털 미디어 리터러시 심화 탐구", "past_evidence_numbers": [1]}
         matches = [{"experience_title": "기초연기 활동 경험"}]
         result = _fallback_connection_reason("성균관대학교", criterion, activity, matches)
-        self.assertIn("희망 대학인 성균관대학교의 탐구역량 반영 비율 40%", result)
+        self.assertIn("희망 대학인 성균관대학교의 탐구역량 반영 비율이 40%인 점", result)
         self.assertIn("기존 생기부에서 확인한 기초연기 활동 경험을 기반으로", result)
-        self.assertIn("필요가 있기 때문에", result)
+        self.assertIn("관심 분야의 탐구 과정은 확인되지만", result)
+        self.assertIn("해당 대학의 세부 평가요소인 ‘탐구확장성 · 탐구주도성’을 뒷받침할", result)
+        self.assertIn("탐구 범위의 확장이 충분히 드러나지 않아", result)
         self.assertTrue(result.endswith("확장해 보는 것을 추천드립니다."))
         self.assertNotIn("…", result)
+
+    def test_each_college_criterion_has_a_different_connection_reason(self):
+        activities = [
+            ("학업역량", ["분석·비교 과정"], ["학업 활동과 성취 과정"]),
+            ("탐구역량", ["관심 분야의 탐구 과정"], ["탐구 범위의 확장"]),
+            ("잠재역량", [], ["자기주도적 참여", "협업·소통 경험"]),
+        ]
+        reasons = []
+        for area, shown, missing in activities:
+            criterion = SimpleNamespace(
+                area=area, weight="40%", draft_evidence=shown,
+                missing_aspects=missing, revision_direction="",
+                subcriteria=[f"{area} 세부요소"], evaluation_points=[],
+            )
+            reasons.append(_fallback_connection_reason(
+                "성균관대학교", criterion,
+                {"title": f"{area} 보완 프로젝트", "past_evidence_numbers": [1]},
+                [{"experience_title": "동아리활동에서 수행한 관련 경험"}],
+            ))
+        self.assertEqual(len(set(reasons)), 3)
+        self.assertIn("학업 활동과 성취 과정이 충분히 드러나지 않아", reasons[0])
+        self.assertIn("탐구 범위의 확장이 충분히 드러나지 않아", reasons[1])
+        self.assertIn("자기주도적 참여 및 협업·소통 경험을 구체적으로 확인하기 어려워", reasons[2])
+        self.assertTrue(all("40%을" not in reason for reason in reasons))
+
+    def test_same_area_uses_each_university_official_subcriteria(self):
+        base = {
+            "area": "학업역량", "weight": "40%",
+            "draft_evidence": ["분석·비교 과정"],
+            "missing_aspects": ["학업 활동과 성취 과정"],
+            "revision_direction": "", "evaluation_points": [],
+        }
+        activity = {"title": "자료 분석 프로젝트", "past_evidence_numbers": []}
+        first = _fallback_connection_reason(
+            "가 대학", SimpleNamespace(**base, subcriteria=["학업수월성", "학업충실성"]),
+            activity, [],
+        )
+        second = _fallback_connection_reason(
+            "나 대학", SimpleNamespace(**base, subcriteria=["학업성취도", "학업태도 및 탐구력"]),
+            activity, [],
+        )
+        self.assertIn("학업수월성 · 학업충실성", first)
+        self.assertIn("학업성취도 · 학업태도 및 탐구력", second)
+        self.assertNotEqual(first, second)
 
     def test_internal_evidence_numbers_are_naturalized(self):
         text = (
